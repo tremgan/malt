@@ -1,4 +1,4 @@
-# malt
+# malt🌾
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
