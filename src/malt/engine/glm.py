@@ -42,11 +42,14 @@ __all__ = [
     "ConvergenceReport",
     "ConvergenceWarning",
     "DesignMatrix",
+    "GammaGLM",
     "GammaGLMFit",
     "TermKind",
     "build_design_matrix",
+    "build_gamma_glm",
     "check_convergence",
     "fit_gamma_glm",
+    "sample_gamma_glm",
 ]
 
 TermKind = Literal["linear", "quadratic", "interaction"]
@@ -91,6 +94,21 @@ class ConvergenceReport:
         if self.converged:
             return "converged"
         return f"failed: {', '.join(self.failures)}"
+
+
+@dataclass(frozen=True, slots=True)
+class GammaGLM:
+    """An unfitted model: the PyMC model plus what is needed to read it.
+
+    Held together in one value so the design matrix that shaped the model and
+    the model itself cannot drift apart between definition and sampling.
+    Unlike `GammaGLMFit` this is a transient handle, not a serializable
+    record — a `pm.Model` does not belong in `state/`.
+    """
+
+    model: pm.Model
+    design: DesignMatrix
+    response: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,31 +248,22 @@ def check_convergence(
     )
 
 
-def fit_gamma_glm(
+def build_gamma_glm(
     data: pd.DataFrame,
     response: str,
     factors: Sequence[Factor],
     *,
-    draws: int = 2000,
-    tune: int = 1000,
-    chains: int = 4,
-    target_accept: float = 0.95,
     alpha_prior_sigma: float = 10.0,
-    random_seed: int | None = None,
-) -> GammaGLMFit:
-    """Fit a Gamma/log-link quadratic response surface by NUTS.
+) -> GammaGLM:
+    """Define the model without sampling it.
 
-    Returns posterior draws alongside a `ConvergenceReport`. A fit that fails
-    the gate is still returned — the diverged draws are what you need to
-    diagnose it — but raises a `ConvergenceWarning`.
+    Separate from `sample_gamma_glm` so the specification can be inspected,
+    prior-predictive checked, or modified before anyone pays for a posterior.
 
     `alpha` (the Gamma shape, equal to 1/CV^2) is weakly identified at the
     dataset sizes this domain produces, so its prior scale materially moves the
     posterior. It is exposed for that reason; the default assumes a fairly noisy
     assay, which errs toward more exploration rather than less.
-
-    `target_accept` is the first dial to turn if divergences appear; raise it
-    toward 0.99 before reparameterizing.
     """
     design = build_design_matrix(data, factors)
 
@@ -279,8 +288,8 @@ def fit_gamma_glm(
     prior_mu = np.array([_PRIOR_MU[k] for k in design.term_kinds])
     prior_sigma = np.array([_PRIOR_SIGMA[k] for k in design.term_kinds])
 
-    coords = {"term": list(design.term_names), "obs": np.arange(n_obs)}
-    with pm.Model(coords=coords):
+    model = pm.Model(coords={"term": list(design.term_names), "obs": np.arange(n_obs)})
+    with model:
         # Held as constant data so the returned tree is a self-contained record
         # of what was fitted; predictions happen in numpy over the draws.
         X = pm.Data("X", design.X, dims=("obs", "term"))
@@ -295,19 +304,41 @@ def fit_gamma_glm(
         # One shape, varying rate: Var(y) = mu^2 / alpha, i.e. constant CV.
         pm.Gamma("y_obs", alpha=alpha, beta=alpha / mu, observed=y, dims="obs")
 
-        idata = pm.sample(
-            draws=draws,
-            tune=tune,
-            chains=chains,
-            # Not a default to override: PyMC's automatic core allocation
-            # divides by `cores` and raises ZeroDivisionError on a single-core
-            # runtime.
-            cores=1,
-            target_accept=target_accept,
-            nuts_sampler="nutpie",
-            random_seed=random_seed,
-            progressbar=False,
-        )
+    return GammaGLM(model=model, design=design, response=response)
+
+
+def sample_gamma_glm(
+    glm: GammaGLM,
+    *,
+    draws: int = 2000,
+    tune: int = 1000,
+    chains: int = 4,
+    target_accept: float = 0.95,
+    random_seed: int | None = None,
+) -> GammaGLMFit:
+    """Sample a model built by `build_gamma_glm`.
+
+    Returns posterior draws alongside a `ConvergenceReport`. A fit that fails
+    the gate is still returned — the diverged draws are what you need to
+    diagnose it — but raises a `ConvergenceWarning`.
+
+    `target_accept` is the first dial to turn if divergences appear; raise it
+    toward 0.99 before reparameterizing.
+    """
+    idata = pm.sample(
+        draws=draws,
+        tune=tune,
+        chains=chains,
+        # Not a default to override: PyMC's automatic core allocation
+        # divides by `cores` and raises ZeroDivisionError on a single-core
+        # runtime.
+        cores=1,
+        target_accept=target_accept,
+        nuts_sampler="nutpie",
+        random_seed=random_seed,
+        progressbar=False,
+        model=glm.model,
+    )
 
     convergence = check_convergence(idata)
     if not convergence.converged:
@@ -321,9 +352,38 @@ def fit_gamma_glm(
 
     return GammaGLMFit(
         posterior=idata,
-        response=response,
-        factors=design.factors,
-        term_names=design.term_names,
-        term_kinds=design.term_kinds,
+        response=glm.response,
+        factors=glm.design.factors,
+        term_names=glm.design.term_names,
+        term_kinds=glm.design.term_kinds,
         convergence=convergence,
+    )
+
+
+def fit_gamma_glm(
+    data: pd.DataFrame,
+    response: str,
+    factors: Sequence[Factor],
+    *,
+    draws: int = 2000,
+    tune: int = 1000,
+    chains: int = 4,
+    target_accept: float = 0.95,
+    alpha_prior_sigma: float = 10.0,
+    random_seed: int | None = None,
+) -> GammaGLMFit:
+    """Build and sample in one call, for the common case.
+
+    Reach for `build_gamma_glm` and `sample_gamma_glm` separately when you want
+    to inspect the model, run a prior predictive check, or sample the same
+    specification more than once.
+    """
+    glm = build_gamma_glm(data, response, factors, alpha_prior_sigma=alpha_prior_sigma)
+    return sample_gamma_glm(
+        glm,
+        draws=draws,
+        tune=tune,
+        chains=chains,
+        target_accept=target_accept,
+        random_seed=random_seed,
     )

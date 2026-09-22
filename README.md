@@ -2,8 +2,23 @@
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
-malt uses approaches from Bayesian Machine Learning and Active Learnign to efficienctly characterize the response surface of cell cultures to varying media components.
+malt characterizes how cell cultures respond to their media, using Bayesian
+modeling and active learning to get there in fewer experiments than a fixed
+design would need.
 
+The classical approach is design of experiments and response surface
+methodology (Montgomery, *Design and Analysis of Experiments*): ordinary least
+squares on linear, quadratic, and interaction terms. OLS carries a Gaussian
+likelihood, whose support runs from negative to positive infinity. Growth is
+bounded below by zero, so that likelihood puts mass where no measurement can
+land and predicts negative biomass near the edges of a design. malt fits a
+Gamma likelihood instead, which has support on the positive reals and lets
+variance grow with the mean the way these assays do.
+
+The second departure is what happens after a round finishes. Rather than
+committing to one design up front, malt fits what you have measured, works out
+where the response surface is least known, and proposes the next batch from
+there.
 
 ## Status
 
@@ -16,6 +31,8 @@ Nothing else is written yet. The uncertainty split, the acquisition functions,
 the batch-effect model, the state store, and the MCP server are all still ahead.
 
 ## Install
+
+Needs Python 3.12 or newer.
 
 ```bash
 uv sync
@@ -52,8 +69,19 @@ script and wrong performance.
 
 ## Fitting a model
 
-Declare the factors, then pass them to `fit_gamma_glm` along with a dataframe
-of runs:
+Your data is one row per run, a column per factor in real units, and a column
+for what you measured:
+
+```
+   glucose  nitrogen  phosphate  biomass
+0      0.1      0.50       0.55    0.584
+1      0.1      4.00       0.55    1.077
+2     10.0      0.50       0.55    1.507
+3     10.0      4.00       0.55   10.112
+4      0.1      2.25       0.10    0.560
+```
+
+Declare what each column means, then fit:
 
 ```python
 from malt.engine.factors import Factor
@@ -65,28 +93,61 @@ factors = [
     Factor("phosphate", 0.1, 1.0, units="g/L"),
 ]
 
-# runs: one column per factor, plus the measured response
 fit = fit_gamma_glm(runs, response="biomass", factors=factors, random_seed=0)
 
-print(fit.convergence.summary())
-print(fit.posterior["posterior"]["beta"].sel(term="glucose^2").mean().item())
+print(fit.convergence.summary())                                  # converged
+print(fit.posterior["posterior"]["beta"].mean(("chain", "draw"))) # the surface
 ```
 
-The model is a quadratic response surface: a linear term for each factor, a
-squared term for each, and one term per pair. Three factors give nine
-coefficients plus an intercept, so you need at least ten runs before the fit
-means anything.
+```
+glucose               0.72     glucose^2            -0.65
+nitrogen              0.54     nitrogen^2           -0.24
+phosphate             0.25     phosphate^2          -0.50
+                               glucose:nitrogen      0.30
+```
 
-Coefficients come back as an xarray coordinate indexed by term name, so
-`.sel(term="glucose^2")` reads the curvature in glucose directly.
+Every factor gets a linear term, a squared term, and one interaction per pair.
+Three factors make nine coefficients plus an intercept, so ten runs is the
+floor before a fit means anything. `fit_gamma_glm` refuses fewer.
 
-## Why Gamma with a log link
+Negative squared terms are the interesting ones. Each says the response peaks
+inside the range you declared rather than running off an edge, which is what
+makes an optimum worth searching for. Read one directly with
+`fit.posterior["posterior"]["beta"].sel(term="glucose^2")`.
 
-Biomass is positive and its variance grows with its mean. Ordinary least
-squares assumes neither, so it will happily predict negative growth at the
-edges of a design and will underweight the noisy high-yield runs you care most
-about. A Gamma likelihood with a log link holds the coefficient of variation
-constant instead, which is what these assays actually do.
+### Defining and sampling separately
+
+`fit_gamma_glm` wraps two steps. Defining a model costs milliseconds and
+sampling it costs seconds, so split them when you want to see the
+specification before paying for a posterior:
+
+```python
+import pymc as pm
+from malt.engine.glm import build_gamma_glm, sample_gamma_glm
+
+glm = build_gamma_glm(runs, response="biomass", factors=factors)
+pm.sample_prior_predictive(draws=200, model=glm.model)   # do the priors make sense?
+fit = sample_gamma_glm(glm, random_seed=0)
+```
+
+Arguments follow the split. `alpha_prior_sigma` shapes the model, while
+`draws`, `chains`, `target_accept` and `random_seed` shape the sampling.
+
+## Why the log link
+
+The intro covers the Gamma likelihood. The link deserves its own note.
+
+A log link makes the coefficients multiplicative: doubling glucose scales
+biomass by a factor rather than adding a fixed amount, which is how media
+components behave. It also pairs with the Gamma to hold the coefficient of
+variation constant, so a run yielding 10 g/L carries proportionally more
+absolute noise than one yielding 1. Fit those on a Gaussian and the
+high-yield runs look like outliers, so the model chases them.
+
+One consequence worth knowing: the posterior over the mean is lognormal
+shaped, not normal. Closed-form Gaussian formulas for expected improvement do
+not apply, so the acquisition functions will compute by Monte Carlo over the
+draws instead.
 
 ## Why coded units, not z-scores
 

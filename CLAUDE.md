@@ -23,7 +23,7 @@ execution — not a dashboard or CLI a human has to drive turn-by-turn.
 ```
 malt/
   engine/          # the modeling core — no I/O, no orchestration, pure functions
-    glm.py         # design matrix, priors, pm.Model, NUTS fit, convergence report
+    glm.py         # design matrix, model definition, NUTS sampling, convergence report
     diagnostics.py # residual plots, mean-variance check, OLS/negativity baseline
     uncertainty.py # posterior -> predictions: mu at query points, epistemic/aleatoric split
     acquisition.py # UCB / EI / PI / Thompson, single-point and batch variants
@@ -59,7 +59,14 @@ file writes, or progress output.
 
 **`glm.py` owns the fit; `uncertainty.py` owns what you do with it.** The
 model specification, sampling, and convergence checking all live in
-`glm.py`, which returns a `GammaGLMFit` value carrying posterior draws, the
+`glm.py`, but **defining a model and sampling it are separate functions**:
+`build_gamma_glm` returns a `GammaGLM` handle, `sample_gamma_glm` turns that
+into a `GammaGLMFit`, and `fit_gamma_glm` is a thin wrapper over both. Keep
+them separate — defining costs milliseconds and sampling costs seconds, and
+the split is what makes prior predictive checks affordable. Arguments follow
+the split: `alpha_prior_sigma` is a definition parameter, `draws`/`chains`/
+`target_accept`/`random_seed` are sampling parameters.
+`sample_gamma_glm` returns a `GammaGLMFit` value carrying posterior draws, the
 term-name contract, the `Factor` declarations, and a `ConvergenceReport`.
 `uncertainty.py` consumes that value to predict mu at unobserved query
 points and split epistemic from aleatoric variance; it should refuse or
