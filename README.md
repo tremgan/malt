@@ -2,13 +2,8 @@
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
-MALT fits a Bayesian model to growth data and proposes which media compositions
-to run next. You give it what you have measured. It gives back a posterior over
-the response surface, separating the uncertainty that more experiments can
-reduce from the assay noise that they cannot.
+malt uses approaches from Bayesian Machine Learning and Active Learnign to efficienctly characterize the response surface of cell cultures to varying media components.
 
-An agent drives the loop through MCP tools. A person approves every batch before
-it reaches a bench.
 
 ## Status
 
