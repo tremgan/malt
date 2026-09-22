@@ -1,6 +1,6 @@
 # malt
 
-Media Active-Learning Toolkit.
+**M**edia **A**ctive-**L**earning **T**oolkit.
 
 MALT fits a Bayesian model to growth data and proposes which media compositions
 to run next. You give it what you have measured. It gives back a posterior over
