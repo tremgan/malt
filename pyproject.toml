@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pymc[nutpie]>=6.3.2",
+    "scikit-learn>=1.9.1",
 ]
 
 [build-system]
@@ -14,3 +15,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/malt"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
