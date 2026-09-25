@@ -21,12 +21,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import pandas as pd
 
 from malt.active_learning.actors import Environment
+from malt.engine.factors import Factor
 
 __all__ = [
     "GammaLikelihood",
@@ -35,6 +36,7 @@ __all__ = [
     "Likelihood",
     "Oracle",
     "constant_latent",
+    "gp_sampled_latent",
 ]
 
 
@@ -159,8 +161,44 @@ def quadratic_latent(coeffs: np.ndarray, intercept: float = 0.0) -> LatentFuncti
     
     return latent_function
 
-def gp_sampled_latent(kernel: Callable[[pd.DataFrame], np.ndarray], noise: float = 1e-6) -> LatentFunction:
-    ...
+def gp_sampled_latent(
+    factors: Sequence[Factor],
+    rng: np.random.Generator,
+    *,
+    lengthscale: float = 0.5,
+    sd: float = 0.5,
+    mean: float = 0.0,
+    n_features: int = 1000,
+) -> LatentFunction:
+    """One fixed surface drawn from a Gaussian process with an RBF kernel.
+
+    The draw happens once, here, from `rng`; the returned function is then
+    deterministic and defined everywhere. Sampling GP values at query time
+    instead would hand back a different surface on every call, so the oracle's
+    `query` and `mean` would disagree about the truth.
+
+    It uses random Fourier features: `n_features` random cosines whose sum is,
+    approximately, a draw from a zero-mean GP with kernel
+    `sd^2 exp(-|z - z'|^2 / (2 lengthscale^2))`, shifted by `mean`. Inputs are
+    encoded through `factors` first, so `lengthscale` is in coded units — 0.5
+    is a quarter of every factor's range, linear or log alike.
+
+    On a log link, `mean` is log baseline biomass and `sd` the typical
+    log-scale deviation from it: `sd=0.5` puts most of the surface within a
+    factor of about e (2.7) of the baseline.
+    """
+    factors = tuple(factors)
+    frequencies = rng.normal(0.0, 1.0 / lengthscale, (n_features, len(factors)))
+    phases = rng.uniform(0.0, 2 * np.pi, n_features)
+    weights = rng.normal(0.0, 1.0, n_features)
+    amplitude = sd * np.sqrt(2.0 / n_features)
+
+    def latent_function(x: pd.DataFrame) -> np.ndarray:
+        z = np.column_stack([f.encode(x[f.name].to_numpy()) for f in factors])
+        return mean + amplitude * np.cos(z @ frequencies.T + phases) @ weights
+
+    return latent_function
+
     
 @dataclass(frozen=True, slots=True)
 class Oracle(Environment):

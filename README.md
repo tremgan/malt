@@ -2,6 +2,16 @@
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
+![A GP-sampled biomass surface over glucose and nitrogen, with Gamma-distributed observations scattered around it; the observations stray further from the surface where biomass is high.](docs/figures/gp_oracle.png)
+
+**TL;DR:** malt picks which media compositions to test next, so a campaign
+reaches its best biomass in fewer rounds than a fixed design would take. It fits
+a Bayesian Gamma model to your growth data, which keeps predictions positive and
+lets noise scale with yield, then proposes the batch where that model is least
+certain or most promising. Nothing reaches the lab until a person approves the
+batch. So far the model and the loop's scaffolding exist; the surrogate models
+and acquisition functions that make it run end to end come next.
+
 malt characterizes how cell cultures respond to their media, using Bayesian
 modeling and active learning to get there in fewer experiments than a fixed
 design would need.
@@ -149,6 +159,22 @@ environment.mean(x)         # the ground truth, which a lab never gives you
 inference from model misspecification. `GaussianLikelihood` is there for the
 identity-link case. To simulate a misspecified campaign, change the surface, not
 the likelihood.
+
+For a surface nobody wrote by hand, `gp_sampled_latent` draws one from a
+Gaussian process with an RBF kernel. The draw happens once, from the `rng` you
+pass, and the result is a fixed function you can query anywhere. Lengthscale is
+measured in coded units, so it means the same thing on a linear factor and a log
+one. No quadratic fits such a surface exactly, which makes it a fair test of how
+the models cope with a truth outside their family.
+
+```python
+from malt.benchmark.oracle import GammaLikelihood, Oracle, gp_sampled_latent
+
+latent = gp_sampled_latent(factors, rng, lengthscale=0.6, sd=0.5, mean=np.log(4.0))
+environment = Oracle(latent, GammaLikelihood(alpha=20))
+```
+
+The figure at the top is one of these surfaces (`docs/figures/gp_oracle.py`).
 
 ## Fitting a model
 

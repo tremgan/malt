@@ -1,0 +1,72 @@
+"""GP-sampled latent: a fixed, reproducible surface with the intended kernel."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from malt.benchmark.oracle import GammaLikelihood, Oracle, gp_sampled_latent
+from malt.engine.factors import Factor
+
+FACTORS = (Factor("a", 0.0, 10.0), Factor("b", 0.1, 10.0, scale="log"))
+X = pd.DataFrame({"a": [1.0, 5.0, 9.0], "b": [0.2, 1.0, 8.0]})
+
+
+def at_coded(*points: tuple[float, float]) -> pd.DataFrame:
+    za, zb = np.array(points, dtype=float).T
+    return pd.DataFrame({"a": FACTORS[0].decode(za), "b": FACTORS[1].decode(zb)})
+
+
+def test_surface_is_fixed_once_drawn():
+    # The old sampler redrew the surface on every call, so query and mean
+    # disagreed about the truth.
+    f = gp_sampled_latent(FACTORS, np.random.default_rng(0))
+    np.testing.assert_array_equal(f(X), f(X))
+
+
+def test_surface_is_reproducible_from_rng():
+    a = gp_sampled_latent(FACTORS, np.random.default_rng(0))(X)
+    b = gp_sampled_latent(FACTORS, np.random.default_rng(0))(X)
+    c = gp_sampled_latent(FACTORS, np.random.default_rng(1))(X)
+    np.testing.assert_array_equal(a, b)
+    assert not np.allclose(a, c)
+
+
+def test_surfaces_follow_the_rbf_kernel_in_coded_units():
+    # Across many drawn surfaces: variance sd^2 = 0.25, and correlation
+    # exp(-d^2 / (2 ell^2)) at coded distances d = ell and d = 2 ell.
+    points = at_coded((0, 0), (0.5, 0), (0, 1.0))
+    draws = np.array(
+        [gp_sampled_latent(FACTORS, np.random.default_rng(s), sd=0.5, lengthscale=0.5)(points)
+         for s in range(4000)]
+    )
+    corr = np.corrcoef(draws.T)
+    assert draws[:, 0].var() == pytest.approx(0.25, rel=0.1)
+    assert corr[0, 1] == pytest.approx(np.exp(-0.5), abs=0.05)
+    assert corr[0, 2] == pytest.approx(np.exp(-2.0), abs=0.05)
+
+
+def test_lengthscale_is_the_same_on_a_log_factor():
+    # Moving one lengthscale along the log factor decorrelates exactly as much
+    # as along the linear one, because distance is measured after encoding.
+    points = at_coded((0, 0), (0.5, 0), (0, 0.5))
+    draws = np.array(
+        [gp_sampled_latent(FACTORS, np.random.default_rng(s), lengthscale=0.5)(points)
+         for s in range(4000)]
+    )
+    corr = np.corrcoef(draws.T)
+    assert corr[0, 1] == pytest.approx(corr[0, 2], abs=0.05)
+
+
+def test_mean_shifts_the_surface():
+    base = gp_sampled_latent(FACTORS, np.random.default_rng(0))(X)
+    shifted = gp_sampled_latent(FACTORS, np.random.default_rng(0), mean=np.log(4.0))(X)
+    np.testing.assert_allclose(shifted - base, np.log(4.0))
+
+
+def test_gamma_oracle_on_a_gp_surface_is_positive():
+    oracle = Oracle(gp_sampled_latent(FACTORS, np.random.default_rng(0)), GammaLikelihood(20.0))
+    y = oracle.query(X, np.random.default_rng(1))
+    assert list(y.columns) == ["y"] and len(y) == len(X)
+    assert (y["y"] > 0).all() and (oracle.mean(X) > 0).all()
