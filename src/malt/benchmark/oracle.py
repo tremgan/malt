@@ -19,12 +19,14 @@ numpy's global state, so a caller can give the oracle its own stream.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from collections.abc import Callable
-from typing import Protocol
 
 import numpy as np
 import pandas as pd
+
+from malt.active_learning.actors import Environment
 
 __all__ = [
     "GammaLikelihood",
@@ -36,21 +38,25 @@ __all__ = [
 ]
 
 
-class Likelihood(Protocol):
+class Likelihood(ABC):
     """Defines the noise model for the underlying function. Specifically,
     it defines the conditional distribution p(y | f(x)) for the observed data y given the latent function value f(x)."""
 
+    __slots__ = ()
+
+    @abstractmethod
     def sample(self, latent: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         """Samples from the conditional distribution p(y | f(x)) for the observed data y given the latent function value f(x)."""
         ...
 
+    @abstractmethod
     def mean(self, latent: np.ndarray) -> np.ndarray:
         """Returns the mean of the conditional distribution p(y | f(x)) for the observed data y given the latent function value f(x)."""
         ...
 
 
 @dataclass(frozen=True, slots=True)
-class GaussianLikelihood:
+class GaussianLikelihood(Likelihood):
     """Additive, constant-variance noise under an identity link: `y ~ Normal(f, sigma)`.
 
     The degenerate case of the link/likelihood split — `f` *is* the mean — which
@@ -74,7 +80,7 @@ class GaussianLikelihood:
 
 
 @dataclass(frozen=True, slots=True)
-class GammaLikelihood:
+class GammaLikelihood(Likelihood):
     """Constant-CV positive noise under a log link: `y ~ Gamma(alpha, alpha / exp(f))`.
 
     Deliberately the same parameterization as `glm.fit_gamma_glm` — one shape,
@@ -157,7 +163,7 @@ def gp_sampled_latent(kernel: Callable[[pd.DataFrame], np.ndarray], noise: float
     ...
     
 @dataclass(frozen=True, slots=True)
-class Oracle:
+class Oracle(Environment):
 
     latent: LatentFunction
     likelihood: Likelihood

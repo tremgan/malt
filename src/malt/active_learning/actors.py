@@ -14,7 +14,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, Self
+from abc import ABC, abstractmethod
+from typing import Self
 
 import numpy as np
 import pandas as pd
@@ -27,7 +28,7 @@ __all__ = [
 ]
 
 
-class SurrogateModel(Protocol):
+class SurrogateModel(ABC):
     """A distribution over response surfaces that can be conditioned and sampled.
 
     Before it has seen any data it is the prior; `condition` turns it into the
@@ -39,6 +40,9 @@ class SurrogateModel(Protocol):
     configuration and every observation seen so far, and refitting on all of it.
     """
 
+    __slots__ = ()
+
+    @abstractmethod
     def condition(self, data: pd.DataFrame, rng: np.random.Generator) -> Self:
         """Return this model additionally conditioned on `data`.
 
@@ -48,6 +52,7 @@ class SurrogateModel(Protocol):
         """
         ...
 
+    @abstractmethod
     def sample(self, x: pd.DataFrame) -> np.ndarray:
         """Joint draws of the mean response mu at `x`, shape `(n_draws, len(x))`.
 
@@ -62,12 +67,13 @@ class SurrogateModel(Protocol):
         ...
 
     @property
+    @abstractmethod
     def reliable(self) -> bool:
         """Whether `sample` can be trusted — e.g. whether MCMC passed its convergence gate."""
         ...
 
 
-class Acquisition(Protocol):
+class Acquisition(ABC):
     """A rule for choosing the next batch of experiments.
 
     Model-driven rules (Thompson, UCB, EI) read the model; a fixed design
@@ -78,6 +84,9 @@ class Acquisition(Protocol):
     region to itself.
     """
 
+    __slots__ = ()
+
+    @abstractmethod
     def propose(
         self, model: SurrogateModel, n: int, rng: np.random.Generator
     ) -> tuple[pd.DataFrame, Self]:
@@ -89,9 +98,12 @@ class Acquisition(Protocol):
         ...
 
 
-class Environment(Protocol):
-    """Something that can be queried at design points for noisy observations."""
+class Environment(ABC):
+    """Something that can be queried at design points for noisy observations, real or synthetic."""
 
+    __slots__ = ()
+
+    @abstractmethod
     def query(self, x: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
         """Observe the response at each row of `x`, one output row per input row.
 

@@ -11,8 +11,6 @@ models and acquisition rules consume.
 from __future__ import annotations
 
 import uuid
-import warnings
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -79,7 +77,10 @@ class LabJournal:
     prior: SurrogateModel  # the surrogate before any data
     acquisition: Acquisition  # the acquisition rule before any proposal
     seed: Seed
+    termination_rule: TerminationRule
     rounds: list[RoundEntry] = field(default_factory=list)
+    # The leaf rules that stopped the loop; set by `run_loop` once it ends.
+    stopped_by: tuple[TerminationRule, ...] = ()
 
     def log(self, entry: RoundEntry) -> None:
         """Append a completed round."""
@@ -126,20 +127,15 @@ def run_loop(
     n: int,
     *,
     random_seed: int,
-    termination_rules: Sequence[TerminationRule] = (MaxRoundsRule(10),),
+    termination_rule: TerminationRule = MaxRoundsRule(10),
 ) -> LabJournal:
     """Condition on the seed, then run `loop_step` with batches of `n` until
-    any termination rule fires.
+    `termination_rule` fires.
 
-    The rules are OR-ed: the loop stops as soon as one of them returns True,
-    so a target criterion is capped by adding `MaxRoundsRule` alongside it. They
-    are checked before every round, including the first.
+    The rule is checked before every round, including the first. Combine
+    several with `&` and `|` — a target criterion is capped with
+    `target | MaxRoundsRule(k)`.
     """
-    if not termination_rules:
-        warnings.warn(
-            "run_loop called with no termination rules; it will loop forever.",
-            stacklevel=2,
-        )
     # Independent streams, not two generators on the same seed — those would
     # produce identical sequences and correlate choices with observation noise.
     experimenter_rng, environment_rng, id_rng = np.random.default_rng(
@@ -155,9 +151,10 @@ def run_loop(
         prior=prior,
         acquisition=acquisition,
         seed=Seed(seed_data, experimenter.surrogate_model),
+        termination_rule=termination_rule,
     )
 
-    while not any(rule(journal) for rule in termination_rules):
+    while not termination_rule(journal):
         journal.log(
             loop_step(
                 experimenter=experimenter,
@@ -168,4 +165,5 @@ def run_loop(
                 id_rng=id_rng,
             )
         )
+    journal.stopped_by = termination_rule.fired(journal)
     return journal

@@ -44,12 +44,16 @@ uv sync
 
 ## The active-learning loop
 
-A campaign has four actors, each a protocol in `malt.active_learning.actors`:
+A campaign has four actors, defined in `malt.active_learning.actors`:
 
 - a **surrogate model**: what the loop currently believes about the response surface
 - an **acquisition** rule: how it picks the next experiments given that belief
 - an **experimenter**: the two together, the thing that decides what to run
 - an **environment**: whatever runs the experiments, simulated or real
+
+The surrogate model, acquisition rule and environment are abstract base
+classes: an implementation subclasses one and fills in its abstract methods.
+The experimenter is a concrete class that holds one surrogate and one rule.
 
 One round goes: the experimenter proposes a batch, the environment runs it, and
 the experimenter updates its belief on what came back.
@@ -71,7 +75,7 @@ run through the same loop and be compared on equal terms.
 ```python
 from malt.active_learning.actors import Experimenter
 from malt.active_learning.loop import run_loop
-from malt.active_learning.termination import MaxRoundsRule
+from malt.active_learning.termination import MaxRoundsRule, UnreliableFitRule
 
 experimenter = Experimenter(surrogate_model=..., acquisition=...)
 
@@ -81,10 +85,7 @@ journal = run_loop(
     seed_data,            # the experiments you start from
     n=8,                  # batch size
     random_seed=0,
-    termination_rules=[
-        lambda journal: any((r.data.y > 12).any() for r in journal.rounds),
-        MaxRoundsRule(k=12),
-    ],
+    termination_rule=UnreliableFitRule() | MaxRoundsRule(k=12),
 )
 ```
 
@@ -92,9 +93,12 @@ The seed is not a round. It is the data a campaign starts from, usually a
 Box-Behnken or similar design, or historical runs, and a benchmark gives every
 experimenter the same one.
 
-The loop stops as soon as any rule fires, so a target is capped by listing
-`MaxRoundsRule` next to it. The default is ten rounds. A rule is a function of
-the journal and holds no state of its own.
+`run_loop` takes one termination rule, checked before every round. Rules
+combine with `&` and `|` into a new rule, so a target is capped by `|`-ing it
+with `MaxRoundsRule`; the example above stops early if a fit fails its
+convergence gate. The default is ten rounds. A rule is a function of the
+journal and holds no state of its own, and only rules combine with rules, so
+every part of a stopping criterion is a named object.
 
 ### The lab journal
 
@@ -107,6 +111,10 @@ it, and one entry per round. Each round records its data, the model after
 conditioning on that data, and the acquisition rule after proposing it, so the
 last entry is always the campaign's current state. Models and rules are
 immutable, so keeping one per round costs a reference, not a copy.
+
+The journal also records the termination rule and, in `stopped_by`, which
+parts of it fired. Rules are pure functions of the journal, so evaluating them
+on the finished journal gives the same answer they gave when the loop stopped.
 
 Each round also carries a UUID. The environment decides what its rows record
 beyond the response; a real lab might add operator or inoculum, which is what a
