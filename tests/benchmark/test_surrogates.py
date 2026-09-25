@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import os
+import numpy as np
+import pandas as pd
+import pytest
 
-# The GLM surrogate samples with nutpie, which needs PyTensor's C backend off on
-# macOS 26+ (see CLAUDE.md). Set before anything imports pytensor; this is the
-# only test module that does.
-os.environ.setdefault("PYTENSOR_FLAGS", "cxx=")
-
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import pytest  # noqa: E402
-
-from malt.benchmark.oracle import GammaLikelihood, Oracle  # noqa: E402
-from malt.benchmark.surrogates import BayesianLinearRegression, GammaGLMSurrogate  # noqa: E402
-from malt.engine.factors import Factor  # noqa: E402
+from malt.benchmark.oracle import GammaLikelihood, Oracle
+from malt.benchmark.surrogates import BayesianLinearRegression, GammaGLMSurrogate
+from malt.engine.factors import Factor
 
 FACTORS = (Factor("x1", 0.0, 10.0), Factor("x2", 0.1, 10.0, scale="log"))
 

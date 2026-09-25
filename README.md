@@ -2,7 +2,7 @@
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
-![A GP-sampled biomass surface over glucose and nitrogen, with Gamma-distributed observations scattered around it; the observations stray further from the surface where biomass is high.](docs/figures/gp_oracle.png)
+![A peaked mean biomass surface over glucose and nitrogen: beige at the edges, rising to a single green peak of 12 g/L near 12 g/L glucose and 2 g/L nitrogen.](docs/figures/quadratic_oracle.png)
 
 **TL;DR:** malt picks which media compositions to test next, so a campaign
 reaches its best biomass in fewer rounds than a fixed design would take. It fits
@@ -160,6 +160,24 @@ inference from model misspecification. `GaussianLikelihood` is there for the
 identity-link case. To simulate a misspecified campaign, change the surface, not
 the likelihood.
 
+`quadratic_latent` is a single peak in coded units, set by where the optimum is,
+how high it is, and how sharply it falls away; off-diagonal curvature tilts it.
+It is the shape a growth response is expected to have near an optimum, and
+exactly the family the Gamma GLM fits. The figure at the top is one
+(`docs/figures/quadratic_oracle.py`).
+
+```python
+from malt.benchmark.oracle import GammaLikelihood, Oracle, quadratic_latent
+
+latent = quadratic_latent(
+    factors,
+    optimum={"glucose": 12.0, "nitrogen": 2.0},
+    peak=np.log(12.0),
+    curvature=[[3.4, -2.2], [-2.2, 3.4]],
+)
+environment = Oracle(latent, GammaLikelihood(alpha=20))
+```
+
 For a surface nobody wrote by hand, `gp_sampled_latent` draws one from a
 Gaussian process with an RBF kernel. The draw happens once, from the `rng` you
 pass, and the result is a fixed function you can query anywhere. Lengthscale is
@@ -168,13 +186,10 @@ one. No quadratic fits such a surface exactly, which makes it a fair test of how
 the models cope with a truth outside their family.
 
 ```python
-from malt.benchmark.oracle import GammaLikelihood, Oracle, gp_sampled_latent
-
 latent = gp_sampled_latent(factors, rng, lengthscale=0.6, sd=0.5, mean=np.log(4.0))
-environment = Oracle(latent, GammaLikelihood(alpha=20))
 ```
 
-The figure at the top is one of these surfaces (`docs/figures/gp_oracle.py`).
+`docs/figures/gp_oracle.py` renders one.
 
 ## Fitting a model
 

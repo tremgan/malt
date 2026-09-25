@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -37,6 +37,7 @@ __all__ = [
     "Oracle",
     "constant_latent",
     "gp_sampled_latent",
+    "quadratic_latent",
 ]
 
 
@@ -147,19 +148,53 @@ def constant_latent(value: float) -> LatentFunction:
     """
     return lambda x: np.full(len(x), value, dtype=float)
 
-def quadratic_latent(coeffs: np.ndarray, intercept: float = 0.0) -> LatentFunction:
-    """A quadratic surface in the input space.
+def quadratic_latent(
+    factors: Sequence[Factor],
+    *,
+    optimum: Mapping[str, float],
+    peak: float,
+    curvature: float | Sequence[float] | np.ndarray,
+) -> LatentFunction:
+    """A single peak: `f(z) = peak - (z - z*)' A (z - z*)` in coded units.
 
-    Useful for testing the oracle's ability to capture curvature and for
-    generating synthetic data with known structure.
+    The shape a growth response is expected to have near an optimum, and
+    exactly the family the Gamma GLM fits — linear, squared and interaction
+    terms on the coded scale — so it is the in-family benchmark surface.
+
+    `optimum` is the peak's location in real units, one entry per factor; it
+    must lie inside every declared range. `peak` is the latent value there
+    (log biomass under a log link, so `np.log(12.0)` is a 12 g/L peak).
+    `curvature` is `A`: a scalar or one value per factor for an axis-aligned
+    peak, or a full symmetric matrix whose off-diagonal entries tilt it — an
+    interaction between factors. It must be positive definite, or the surface
+    has no peak. Entries are drops in `f` per squared coded unit: 1.0 on a
+    factor means moving from the optimum to the edge of a range centred on it
+    costs one unit of log biomass, a factor of e.
     """
+    factors = tuple(factors)
+    k = len(factors)
+    missing = [f.name for f in factors if f.name not in optimum]
+    if missing:
+        raise ValueError(f"optimum is missing factors: {missing}")
+    outside = [f.name for f in factors if not f.contains(np.array(optimum[f.name]))]
+    if outside:
+        raise ValueError(f"optimum lies outside the declared range of: {outside}")
+    z_star = np.array([f.encode(np.array(optimum[f.name])) for f in factors], dtype=float)
+
+    A = np.asarray(curvature, dtype=float)
+    if A.ndim < 2:
+        A = np.diag(np.broadcast_to(A, (k,)))
+    if A.shape != (k, k) or not np.allclose(A, A.T):
+        raise ValueError(f"curvature must be a scalar, {k} values, or a symmetric {k}x{k} matrix")
+    if np.linalg.eigvalsh(A).min() <= 0:
+        raise ValueError("curvature must be positive definite, or the surface has no peak")
+
     def latent_function(x: pd.DataFrame) -> np.ndarray:
-        # Assuming x has two columns for a 2D quadratic surface
-        if x.shape[1] != len(coeffs):
-            raise ValueError(f"Expected {len(coeffs)} features, got {x.shape[1]}")
-        return intercept + np.sum(coeffs * (x ** 2), axis=1)
-    
+        d = np.column_stack([f.encode(x[f.name].to_numpy()) for f in factors]) - z_star
+        return peak - np.einsum("ni,ij,nj->n", d, A, d)
+
     return latent_function
+
 
 def gp_sampled_latent(
     factors: Sequence[Factor],

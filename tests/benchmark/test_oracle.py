@@ -1,4 +1,4 @@
-"""GP-sampled latent: a fixed, reproducible surface with the intended kernel."""
+"""Latent surfaces: the peaked quadratic, and the GP sample with its intended kernel."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from malt.benchmark.oracle import GammaLikelihood, Oracle, gp_sampled_latent
+from malt.benchmark.oracle import GammaLikelihood, Oracle, gp_sampled_latent, quadratic_latent
 from malt.engine.factors import Factor
+from malt.engine.glm import build_design_matrix
 
 FACTORS = (Factor("a", 0.0, 10.0), Factor("b", 0.1, 10.0, scale="log"))
 X = pd.DataFrame({"a": [1.0, 5.0, 9.0], "b": [0.2, 1.0, 8.0]})
@@ -70,3 +71,58 @@ def test_gamma_oracle_on_a_gp_surface_is_positive():
     y = oracle.query(X, np.random.default_rng(1))
     assert list(y.columns) == ["y"] and len(y) == len(X)
     assert (y["y"] > 0).all() and (oracle.mean(X) > 0).all()
+
+
+# Peaked quadratic
+
+OPTIMUM = {"a": 6.0, "b": 2.0}
+TILTED = np.array([[1.0, -0.4], [-0.4, 0.8]])
+
+
+def dense_grid(k: int = 201) -> pd.DataFrame:
+    z = np.linspace(-1, 1, k)
+    za, zb = np.meshgrid(z, z)
+    return at_coded(*zip(za.ravel(), zb.ravel()))
+
+
+def test_quadratic_peaks_at_the_optimum_with_the_peak_value():
+    f = quadratic_latent(FACTORS, optimum=OPTIMUM, peak=2.5, curvature=TILTED)
+    at_optimum = pd.DataFrame({k: [v] for k, v in OPTIMUM.items()})
+    assert f(at_optimum)[0] == pytest.approx(2.5)
+    grid = dense_grid()
+    assert f(grid).max() <= 2.5 + 1e-12
+    best = grid.iloc[int(np.argmax(f(grid)))]
+    assert best["a"] == pytest.approx(OPTIMUM["a"], rel=0.02)
+    assert best["b"] == pytest.approx(OPTIMUM["b"], rel=0.05)
+
+
+def test_quadratic_curvature_is_per_squared_coded_unit():
+    # 1.0 on an axis-aligned factor: one coded unit from the optimum costs 1.0.
+    f = quadratic_latent(FACTORS, optimum={"a": 5.0, "b": 1.0}, peak=0.0, curvature=[1.0, 4.0])
+    np.testing.assert_allclose(f(at_coded((1, 0), (0, 0.5), (-1, 0))), [-1.0, -1.0, -1.0])
+
+
+def test_quadratic_is_in_the_glms_family():
+    # Exactly linear in the GLM's design matrix: least squares on the full
+    # quadratic basis reproduces it with zero residual.
+    f = quadratic_latent(FACTORS, optimum=OPTIMUM, peak=2.5, curvature=TILTED)
+    grid = dense_grid(21)
+    X = np.column_stack([np.ones(len(grid)), build_design_matrix(grid, FACTORS).X])
+    _, residual, *_ = np.linalg.lstsq(X, f(grid), rcond=None)
+    assert residual[0] == pytest.approx(0.0, abs=1e-18)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"optimum": {"a": 6.0}}, "missing"),
+        ({"optimum": {"a": 60.0, "b": 2.0}}, "outside"),
+        ({"curvature": [1.0, -0.5]}, "positive definite"),
+        ({"curvature": np.array([[1.0, 2.0], [2.0, 1.0]])}, "positive definite"),
+        ({"curvature": np.array([[1.0, 0.3], [0.0, 1.0]])}, "symmetric"),
+    ],
+)
+def test_quadratic_rejects_invalid_input(kwargs, match):
+    args = {"optimum": OPTIMUM, "peak": 0.0, "curvature": 1.0} | kwargs
+    with pytest.raises(ValueError, match=match):
+        quadratic_latent(FACTORS, **args)
