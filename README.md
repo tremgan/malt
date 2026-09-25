@@ -22,13 +22,17 @@ there.
 
 ## Status
 
-Early. Two modules exist:
+Early. What exists:
 
 - `malt.engine.factors` declares the variables a campaign may vary and their ranges
 - `malt.engine.glm` fits a Gamma/log-link response surface and reports whether the sampler converged
+- `malt.active_learning` defines the loop: the interfaces its actors implement, the loop that runs them, a journal that records each round, and rules for when to stop
+- `malt.benchmark.oracle` simulates an environment with a known ground truth, for testing the loop without a lab
 
-Nothing else is written yet. The uncertainty split, the acquisition functions,
-the batch-effect model, the state store, and the MCP server are all still ahead.
+The loop's interfaces are defined but nothing implements them yet. The next
+pieces are a surrogate model built on the Gamma GLM, the acquisition functions,
+and a simulated end-to-end campaign. The batch-effect model, the state store,
+and the MCP server come after that.
 
 ## Install
 
@@ -38,34 +42,105 @@ Needs Python 3.12 or newer.
 uv sync
 ```
 
-### macOS 26 and later need one flag
+## The active-learning loop
 
-Sampling dies with `ld: library 'd64' not found` until you set it. PyTensor
-hardcodes a `-ld64` linker argument for macOS 15+ in
-`pytensor/link/c/cmodule.py` and offers no config switch to turn it off. The
-current linker reads that argument as a request to link a library called `d64`,
-which does not exist.
+A campaign has four actors, each a protocol in `malt.active_learning.actors`:
 
-```bash
-PYTENSOR_FLAGS='cxx=' uv run python your_script.py
+- a **surrogate model**: what the loop currently believes about the response surface
+- an **acquisition** rule: how it picks the next experiments given that belief
+- an **experimenter**: the two together, the thing that decides what to run
+- an **environment**: whatever runs the experiments, simulated or real
+
+One round goes: the experimenter proposes a batch, the environment runs it, and
+the experimenter updates its belief on what came back.
+
+The surrogate is a distribution over response surfaces. Before it has seen data
+it is the prior, and `condition(data)` returns the posterior as a new model,
+leaving the old one untouched. `sample(x)` returns joint draws of the mean
+response at `x`, one row per draw, and the same row is the same surface on every
+call. Thompson sampling depends on that: it picks each draw's best point, which
+only means something if the whole row comes from one surface.
+
+An acquisition rule gets the model and returns the next batch. Model-driven
+rules (Thompson, UCB, expected improvement) read it; a fixed design ignores it.
+That is what lets a Bayesian-optimization campaign and an iterative DOE campaign
+run through the same loop and be compared on equal terms.
+
+### Running a campaign
+
+```python
+from malt.active_learning.actors import Experimenter
+from malt.active_learning.loop import run_loop
+from malt.active_learning.termination import MaxRoundsRule
+
+experimenter = Experimenter(surrogate_model=..., acquisition=...)
+
+journal = run_loop(
+    experimenter,
+    environment,
+    seed_data,            # the experiments you start from
+    n=8,                  # batch size
+    random_seed=0,
+    termination_rules=[
+        lambda journal: any((r.data.y > 12).any() for r in journal.rounds),
+        MaxRoundsRule(k=12),
+    ],
+)
 ```
 
-Set it once per machine instead, in `~/.pytensorrc`:
+The seed is not a round. It is the data a campaign starts from, usually a
+Box-Behnken or similar design, or historical runs, and a benchmark gives every
+experimenter the same one.
 
-```ini
-[global]
-cxx =
+The loop stops as soon as any rule fires, so a target is capped by listing
+`MaxRoundsRule` next to it. The default is ten rounds. A rule is a function of
+the journal and holds no state of its own.
+
+### The lab journal
+
+> Remember kids, the only difference between screwing around and science is
+> writing it down.
+
+`run_loop` returns a `LabJournal` with enough in it to replay the campaign:
+the prior and the starting acquisition rule, the seed and the model fitted to
+it, and one entry per round. Each round records its data, the model after
+conditioning on that data, and the acquisition rule after proposing it, so the
+last entry is always the campaign's current state. Models and rules are
+immutable, so keeping one per round costs a reference, not a copy.
+
+Each round also carries a UUID. The environment decides what its rows record
+beyond the response; a real lab might add operator or inoculum, which is what a
+batch-effect model will group by.
+
+### Randomness
+
+`random_seed` is the only way randomness enters. The loop splits it into
+independent streams for the experimenter, the environment, and round IDs, and
+the journal records it, so a simulated campaign reruns identically.
+
+Separate streams matter for benchmarks. Two experimenters run with the same
+seed see the same observation noise, however much randomness their own models
+use, so a difference between them is a difference between strategies and not
+luck of the draw.
+
+## Simulated environments
+
+`malt.benchmark.oracle.Oracle` stands in for the lab. It pairs a latent function,
+the true surface on the link scale, with a likelihood that turns it into noisy
+measurements:
+
+```python
+from malt.benchmark.oracle import GammaLikelihood, Oracle
+
+environment = Oracle(latent=true_surface, likelihood=GammaLikelihood(alpha=20))
+environment.query(x, rng)   # noisy measurements, as a lab would return them
+environment.mean(x)         # the ground truth, which a lab never gives you
 ```
 
-Turning off the C backend costs almost nothing here. Sampling runs through
-nutpie, which compiles the log-density with numba, so the C backend only ever
-handled small helper graphs. A 15-run fit takes about two seconds with or
-without it. Leave the flag alone.
-
-One warning: `PYTENSOR_FLAGS='ldflags='` looks like it works and does not.
-PyTensor does not recognize `ldflags` as a flag, ignores it, and falls back to
-a slow Python interpreter for graphs it cannot compile. You get a working
-script and wrong performance.
+`GammaLikelihood` draws from the same family the model fits, so a test isolates
+inference from model misspecification. `GaussianLikelihood` is there for the
+identity-link case. To simulate a misspecified campaign, change the surface, not
+the likelihood.
 
 ## Fitting a model
 
