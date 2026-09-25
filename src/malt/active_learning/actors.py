@@ -1,9 +1,9 @@
-"""The actors in the active-learning loop.
+"""The actors in the active-learning campaign.
 
     Experimenter = SurrogateModel + Acquisition   --propose x-->   Environment
                  <-------------------- observe (x, y) ----------------
 
-- `SurrogateModel` — what the loop believes about the response surface.
+- `SurrogateModel` — what the campaign believes about the response surface.
 - `Acquisition` — how it chooses the next experiments given that belief.
 - `Experimenter` — the two together: the thing that interacts with the world, and
   the unit a benchmark compares (BO vs. iterative DOE is two experimenters).
@@ -68,6 +68,12 @@ class SurrogateModel(ABC):
 
     @property
     @abstractmethod
+    def data(self) -> pd.DataFrame | None:
+        """Every observation conditioned on so far, or None before any."""
+        ...
+
+    @property
+    @abstractmethod
     def reliable(self) -> bool:
         """Whether `sample` can be trusted — e.g. whether MCMC passed its convergence gate."""
         ...
@@ -77,11 +83,9 @@ class Acquisition(ABC):
     """A rule for choosing the next batch of experiments.
 
     Model-driven rules (Thompson, UCB, EI) read the model; a fixed design
-    ignores it. Rules that carry state across rounds — a fixed design's next
-    block, an iterative RSM's current region — return their successor from
-    `propose` rather than mutating themselves. Points must lie inside the
-    declared `Factor` ranges; a rule working in a local sub-region keeps that
-    region to itself.
+    ignores it. A rule is stateless and fixed for the whole campaign: all it
+    learns between rounds, it learns through the model. Points must lie inside
+    the declared `Factor` ranges.
     """
 
     __slots__ = ()
@@ -89,8 +93,8 @@ class Acquisition(ABC):
     @abstractmethod
     def propose(
         self, model: SurrogateModel, n: int, rng: np.random.Generator
-    ) -> tuple[pd.DataFrame, Self]:
-        """Choose `n` design points, plus the rule to use next round.
+    ) -> pd.DataFrame:
+        """Choose `n` design points.
 
         Returns a frame with a column per factor, in real units. Any randomness
         in the choice — e.g. Thompson sampling — comes from `rng`.
@@ -119,15 +123,14 @@ class Environment(ABC):
 
 @dataclass
 class Experimenter:
-    """A surrogate model paired with an acquisition rule — the loop's decision-maker."""
+    """A surrogate model paired with an acquisition rule — the campaign's decision-maker."""
 
     surrogate_model: SurrogateModel
     acquisition: Acquisition
 
     def propose(self, n: int, rng: np.random.Generator) -> pd.DataFrame:
-        """Choose `n` design points, advancing the acquisition rule in place."""
-        x, self.acquisition = self.acquisition.propose(self.surrogate_model, n, rng)
-        return x
+        """Choose `n` design points."""
+        return self.acquisition.propose(self.surrogate_model, n, rng)
 
     def observe(self, data: pd.DataFrame, rng: np.random.Generator) -> None:
         """Condition this experimenter's surrogate model on `data`, in place."""

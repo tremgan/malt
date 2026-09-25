@@ -1,9 +1,8 @@
-"""Dummy actors for testing the loop itself, not any real model.
+"""Dummy actors for testing the campaign itself, not any real model.
 
 Each one is the smallest subclass of its actor ABC that makes the
 property under test observable: a model that counts what it has seen, a design
-that walks through fixed blocks, an environment whose response is a known
-function of x.
+that uses no randomness, an environment whose response is a known function of x.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ GRID = pd.DataFrame({"glucose": np.linspace(0.0, 10.0, 500)})
 
 @dataclass(frozen=True)
 class CountingModel(SurrogateModel):
-    """A stand-in surrogate that models nothing. Each field exposes one loop
+    """A stand-in surrogate that models nothing. Each field exposes one campaign
     property to the tests:
 
     - `n_seen` counts the points conditioned on, so the journal's snapshots can
@@ -46,19 +45,19 @@ class CountingModel(SurrogateModel):
         return np.zeros((1, len(x)))
 
     @property
+    def data(self) -> pd.DataFrame | None:
+        return None  # counts what it sees rather than keeping it
+
+    @property
     def reliable(self) -> bool:
         return self.n_seen < self.fail_at
 
 
-@dataclass(frozen=True)
-class BlockDesign(Acquisition):
-    """A fixed design: block `i` is grid rows `[i*n, (i+1)*n)`. Uses no randomness."""
-
-    block: int = 0
+class FirstRows(Acquisition):
+    """Always the first `n` grid rows. Uses no randomness."""
 
     def propose(self, model, n, rng):
-        x = GRID.iloc[self.block * n : (self.block + 1) * n]
-        return x, BlockDesign(self.block + 1)
+        return GRID.iloc[:n]
 
 
 @dataclass(frozen=True)
@@ -70,7 +69,7 @@ class RandomPick(Acquisition):
 
     def propose(self, model, n, rng):
         rng.random(self.burn)
-        return GRID.iloc[rng.choice(len(GRID), n, replace=False)], self
+        return GRID.iloc[rng.choice(len(GRID), n, replace=False)]
 
 
 class LinearEnvironment(Environment):

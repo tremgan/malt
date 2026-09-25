@@ -15,7 +15,7 @@ import pandas as pd  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 from mpl_toolkits.mplot3d.axes3d import Axes3D  # noqa: E402
 
-from malt.benchmark.oracle import LatentFunction  # noqa: E402
+from malt.simulation.oracle import LatentFunction  # noqa: E402
 from malt.engine.factors import Factor  # noqa: E402
 
 # Wheat to green, after 🌾: beige where biomass is low, deep green at the peak.

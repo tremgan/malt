@@ -14,8 +14,8 @@ reaches its best biomass in fewer rounds than a fixed design would take. It fits
 a Bayesian Gamma model to your growth data, which keeps predictions positive and
 lets noise scale with yield, then proposes the batch where that model is least
 certain or most promising. Nothing reaches the lab until a person approves the
-batch. So far the model and the loop's scaffolding exist; the surrogate models
-and acquisition functions that make it run end to end come next.
+batch. The model, the campaign and its acquisition rules exist; the state store
+and the agent-facing tools come next.
 
 malt characterizes how cell cultures respond to their media, using Bayesian
 modeling and active learning to get there in fewer experiments than a fixed
@@ -41,27 +41,37 @@ Early. What exists:
 
 - `malt.engine.factors` declares the variables a campaign may vary and their ranges
 - `malt.engine.glm` fits a Gamma/log-link response surface and reports whether the sampler converged
-- `malt.active_learning` defines the loop: the interfaces its actors implement, the loop that runs them, a journal that records each round, and rules for when to stop
-- `malt.benchmark.oracle` simulates an environment with a known ground truth, for testing the loop without a lab
+- `malt.active_learning` defines the campaign: the interfaces its actors implement, the campaign that runs them, a journal that records each round, rules for when to stop, and the batch acquisition rules
+- `malt.simulation.oracle` simulates an environment with a known ground truth, for testing the campaign without a lab
+- `malt.simulation.regret` scores campaigns against that ground truth; `python -m benchmarks.regret` runs the comparison
 
-The loop's interfaces are defined but nothing implements them yet. The next
-pieces are a surrogate model built on the Gamma GLM, the acquisition functions,
-and a simulated end-to-end campaign. The batch-effect model, the state store,
-and the MCP server come after that.
+Simulated campaigns run end to end. The batch-effect model, the state store,
+and the MCP server come next.
 
 ## Install
 
-Needs Python 3.12 or newer.
+malt needs Python 3.12 or newer and uses [uv](https://docs.astral.sh/uv/). It
+isn't on PyPI yet, so add it to your project from GitHub:
 
 ```bash
-uv sync
+uv add git+https://github.com/tremgan/malt.git
 ```
 
-## The active-learning loop
+To work on malt itself, clone it and let uv build the environment, dev tools
+included:
+
+```bash
+git clone https://github.com/tremgan/malt.git
+cd malt
+uv sync
+uv run pytest
+```
+
+## The active-learning campaign
 
 A campaign has four actors, defined in `malt.active_learning.actors`:
 
-- a **surrogate model**: what the loop currently believes about the response surface
+- a **surrogate model**: what the campaign currently believes about the response surface
 - an **acquisition** rule: how it picks the next experiments given that belief
 - an **experimenter**: the two together, the thing that decides what to run
 - an **environment**: whatever runs the experiments, simulated or real
@@ -83,18 +93,18 @@ only means something if the whole row comes from one surface.
 An acquisition rule gets the model and returns the next batch. Model-driven
 rules (Thompson, UCB, expected improvement) read it; a fixed design ignores it.
 That is what lets a Bayesian-optimization campaign and an iterative DOE campaign
-run through the same loop and be compared on equal terms.
+run through the same code and be compared on equal terms.
 
 ### Running a campaign
 
 ```python
 from malt.active_learning.actors import Experimenter
-from malt.active_learning.loop import run_loop
+from malt.active_learning.campaign import run_campaign
 from malt.active_learning.termination import MaxRoundsRule, UnreliableFitRule
 
 experimenter = Experimenter(surrogate_model=..., acquisition=...)
 
-journal = run_loop(
+journal = run_campaign(
     experimenter,
     environment,
     seed_data,            # the experiments you start from
@@ -104,11 +114,31 @@ journal = run_loop(
 )
 ```
 
+The acquisition rules live in `malt.active_learning.acquisitions`:
+
+- `QNoisyExpectedImprovement(candidates)` picks the batch one point at a time,
+  each maximizing the batch's expected improvement over the best result so far.
+  It spreads the batch over competing hypotheses about where the peak is.
+- `QUpperConfidenceBound(candidates, beta)` does the same for an upper
+  confidence bound; `beta` sets how much it favours uncertain regions.
+- `ThompsonSampling(candidates)` takes the best point of one plausible surface
+  per batch slot.
+- `CentralComposite(factors, candidates)` places a central composite design
+  around the model's current best guess: iterative response-surface
+  methodology.
+
+Two baselines ignore the model: `RandomBatch(candidates)`, the floor any rule
+must beat, and `FixedDesign(factors, design)`, which runs a design chosen up
+front (a Box-Behnken or CCD over the full ranges) the way most labs do.
+
+`candidates` is any frame of feasible compositions; `candidate_grid(factors,
+levels)` from `malt.engine.factors` builds a full-factorial one.
+
 The seed is not a round. It is the data a campaign starts from, usually a
 Box-Behnken or similar design, or historical runs, and a benchmark gives every
 experimenter the same one.
 
-`run_loop` takes one termination rule, checked before every round. Rules
+`run_campaign` takes one termination rule, checked before every round. Rules
 combine with `&` and `|` into a new rule, so a target is capped by `|`-ing it
 with `MaxRoundsRule`; the example above stops early if a fit fails its
 convergence gate. The default is ten rounds. A rule is a function of the
@@ -120,16 +150,17 @@ every part of a stopping criterion is a named object.
 > Remember kids, the only difference between screwing around and science is
 > writing it down.
 
-`run_loop` returns a `LabJournal` with enough in it to replay the campaign:
-the prior and the starting acquisition rule, the seed and the model fitted to
-it, and one entry per round. Each round records its data, the model after
-conditioning on that data, and the acquisition rule after proposing it, so the
-last entry is always the campaign's current state. Models and rules are
-immutable, so keeping one per round costs a reference, not a copy.
+`run_campaign` returns a `LabJournal` with enough in it to replay the campaign:
+the prior and the acquisition rule, the seed and the model fitted to it, and
+one entry per round. Each round records its data and the model after
+conditioning on that data, so the last entry is always the campaign's current
+state. Models are immutable, so keeping one per round costs a reference, not a
+copy. Acquisition rules are stateless and stay fixed for the whole campaign;
+whatever they learn between rounds, they learn through the model.
 
 The journal also records the termination rule and, in `stopped_by`, which
 parts of it fired. Rules are pure functions of the journal, so evaluating them
-on the finished journal gives the same answer they gave when the loop stopped.
+on the finished journal gives the same answer they gave when the campaign stopped.
 
 Each round also carries a UUID. The environment decides what its rows record
 beyond the response; a real lab might add operator or inoculum, which is what a
@@ -137,7 +168,7 @@ batch-effect model will group by.
 
 ### Randomness
 
-`random_seed` is the only way randomness enters. The loop splits it into
+`random_seed` is the only way randomness enters. The campaign splits it into
 independent streams for the experimenter, the environment, and round IDs, and
 the journal records it, so a simulated campaign reruns identically.
 
@@ -148,12 +179,12 @@ luck of the draw.
 
 ## Simulated environments
 
-`malt.benchmark.oracle.Oracle` stands in for the lab. It pairs a latent function,
+`malt.simulation.oracle.Oracle` stands in for the lab. It pairs a latent function,
 the true surface on the link scale, with a likelihood that turns it into noisy
 measurements:
 
 ```python
-from malt.benchmark.oracle import GammaLikelihood, Oracle
+from malt.simulation.oracle import GammaLikelihood, Oracle
 
 environment = Oracle(latent=true_surface, likelihood=GammaLikelihood(alpha=20))
 environment.query(x, rng)   # noisy measurements, as a lab would return them
@@ -172,7 +203,7 @@ exactly the family the Gamma GLM fits. The figure at the top is one
 (`docs/figures/quadratic_oracle.py`).
 
 ```python
-from malt.benchmark.oracle import GammaLikelihood, Oracle, quadratic_latent
+from malt.simulation.oracle import GammaLikelihood, Oracle, quadratic_latent
 
 latent = quadratic_latent(
     factors,

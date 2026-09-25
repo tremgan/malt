@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from malt.benchmark.oracle import GammaLikelihood, Oracle, gp_sampled_latent, quadratic_latent
+from malt.simulation.oracle import GammaLikelihood, Oracle, gp_sampled_latent, quadratic_latent
 from malt.engine.factors import Factor
 from malt.engine.glm import build_design_matrix
 

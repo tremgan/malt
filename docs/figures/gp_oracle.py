@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from _surface import FACTORS, render_surface
 
-from malt.benchmark.oracle import gp_sampled_latent
+from malt.simulation.oracle import gp_sampled_latent
 
 SEED = 11
 

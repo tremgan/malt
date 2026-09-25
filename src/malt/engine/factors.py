@@ -20,13 +20,16 @@ Keep that column order aligned with the `predictors` you pass to
 
 from __future__ import annotations
 
+import itertools
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+import pandas as pd
 
-__all__ = ["Factor", "FactorScale"]
+__all__ = ["Factor", "FactorScale", "candidate_grid"]
 
 FactorScale = Literal["linear", "log"]
 
@@ -107,3 +110,17 @@ class Factor:
         """Whether values lie in the feasible range, elementwise."""
         value = np.asarray(value, dtype=float)
         return (value >= self.low) & (value <= self.high)
+
+
+def candidate_grid(factors: Sequence[Factor], levels: int) -> pd.DataFrame:
+    """Full-factorial grid of `levels` evenly spaced coded values per factor, in real units.
+
+    Spacing is even in coded units, so a log-scale factor's levels are
+    geometric. Columns follow `factors` order. The grid grows as
+    `levels ** len(factors)`: 21 levels over 3 factors is 9,261 rows.
+    """
+    if levels < 2:
+        raise ValueError(f"need at least 2 levels to span each range, got {levels}")
+    coded = np.linspace(-1.0, 1.0, levels)
+    rows = np.array(list(itertools.product(coded, repeat=len(factors))))
+    return pd.DataFrame({f.name: f.decode(rows[:, j]) for j, f in enumerate(factors)})

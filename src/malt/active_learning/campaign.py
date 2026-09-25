@@ -1,6 +1,6 @@
-"""The active-learning loop: an experimenter acting on an environment, round by round.
+"""The active-learning campaign: an experimenter acting on an environment, round by round.
 
-`run_loop` is the only place randomness enters. It takes one `random_seed`,
+`run_campaign` is the only place randomness enters. It takes one `random_seed`,
 records it in the `LabJournal`, and spawns independent streams from it — one
 for the experimenter, one for the environment, one for round IDs. Keeping the environment on its
 own stream is what makes benchmark arms comparable: two experimenters run with
@@ -28,8 +28,8 @@ __all__ = [
     "LabJournal",
     "RoundEntry",
     "Seed",
-    "loop_step",
-    "run_loop",
+    "campaign_step",
+    "run_campaign",
 ]
 
 
@@ -37,7 +37,7 @@ __all__ = [
 class Seed:
     """The experiments a campaign starts from, before any active learning.
 
-    Not a round: the seed is chosen outside the loop (a house design, historical
+    Not a round: the seed is chosen outside the campaign (a house design, historical
     data) and is shared across the experimenters a benchmark compares.
     """
 
@@ -47,17 +47,16 @@ class Seed:
 
 @dataclass(frozen=True, slots=True)
 class RoundEntry:
-    """One round of the loop, with the experimenter's state once it finished.
+    """One round of the campaign, with the model once it finished.
 
     The model that *proposed* this round's batch is the previous round's (or the
-    seed's); storing the state after the round makes the journal's last entry
+    seed's); storing the model after the round makes the journal's last entry
     the campaign's current state.
     """
 
     id: uuid.UUID # id for the entry but also for the batch of experiments it represents -> used for batch effect modelling
     data: pd.DataFrame 
     surrogate_model: SurrogateModel  # after conditioning on `data`
-    acquisition: Acquisition  # after proposing `data`
 
 
 @dataclass(slots=True)
@@ -69,17 +68,17 @@ class LabJournal:
 
     Replay needs the starting experimenter, the seed and every round. Rerunning
     additionally needs `random_seed` — recorded here, but handed to the actors
-    by `run_loop`, not by the journal.
+    by `run_campaign`, not by the journal.
     """
 
     random_seed: int
     batch_size: int
     prior: SurrogateModel  # the surrogate before any data
-    acquisition: Acquisition  # the acquisition rule before any proposal
+    acquisition: Acquisition  # stateless, so the same rule every round
     seed: Seed
     termination_rule: TerminationRule
     rounds: list[RoundEntry] = field(default_factory=list)
-    # The leaf rules that stopped the loop; set by `run_loop` once it ends.
+    # The leaf rules that stopped the campaign; set by `run_campaign` once it ends.
     stopped_by: tuple[TerminationRule, ...] = ()
 
     def log(self, entry: RoundEntry) -> None:
@@ -87,7 +86,7 @@ class LabJournal:
         self.rounds.append(entry)
 
 
-def loop_step(
+def campaign_step(
     experimenter: Experimenter,
     environment: Environment,
     n: int,
@@ -95,15 +94,15 @@ def loop_step(
     environment_rng: np.random.Generator,
     id_rng: np.random.Generator,
 ) -> RoundEntry:
-    """One round of the active-learning loop.
+    """One round of the active-learning campaign.
 
     1. The experimenter proposes `n` design points.
     2. The environment is queried at those points.
     3. The experimenter conditions its surrogate model on the new observations.
 
     Returns the round: its ID, the new observations — the proposed factor
-    columns joined to whatever the environment returned — and the
-    experimenter's state after it.
+    columns joined to whatever the environment returned — and the model
+    after it.
     """
     # Drawn from its own stream, not uuid4(), so a rerun with the same seed
     # reproduces the IDs along with everything else.
@@ -115,12 +114,10 @@ def loop_step(
     # `set_axis` raises on a length mismatch; `join` on a column name clash.
     data = x.join(observations.set_axis(x.index))
     experimenter.observe(data, experimenter_rng)
-    return RoundEntry(
-        round_id, data, experimenter.surrogate_model, experimenter.acquisition
-    )
+    return RoundEntry(round_id, data, experimenter.surrogate_model)
 
 
-def run_loop(
+def run_campaign(
     experimenter: Experimenter,
     environment: Environment,
     seed_data: pd.DataFrame,
@@ -129,7 +126,7 @@ def run_loop(
     random_seed: int,
     termination_rule: TerminationRule = MaxRoundsRule(10),
 ) -> LabJournal:
-    """Condition on the seed, then run `loop_step` with batches of `n` until
+    """Condition on the seed, then run `campaign_step` with batches of `n` until
     `termination_rule` fires.
 
     The rule is checked before every round, including the first. Combine
@@ -156,7 +153,7 @@ def run_loop(
 
     while not termination_rule(journal):
         journal.log(
-            loop_step(
+            campaign_step(
                 experimenter=experimenter,
                 environment=environment,
                 n=n,

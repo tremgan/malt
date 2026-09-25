@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from _surface import FACTORS, render_surface
 
-from malt.benchmark.oracle import quadratic_latent
+from malt.simulation.oracle import quadratic_latent
 
 render_surface(
     quadratic_latent(

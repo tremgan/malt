@@ -1,7 +1,7 @@
-"""Baseline surrogate models for benchmarking.
+"""Surrogate models: the main Gamma GLM and its Gaussian baseline.
 
-Together with the main model — the quadratic Gamma GLM — these make a 2x2
-ablation, so a benchmark can say what each ingredient buys:
+The main model is the quadratic Gamma GLM. Varying its likelihood and its
+features gives a 2x2 ablation, so a benchmark can say what each ingredient buys:
 
                       linear features          quadratic features
     Gaussian          BayesianLinearRegression("linear")   ("quadratic")
@@ -42,7 +42,7 @@ def _accumulate(seen: pd.DataFrame | None, data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _unconditioned(name: str) -> ValueError:
-    # `sample` takes no rng, so prior draws cannot be made reproducibly; the loop
+    # `sample` takes no rng, so prior draws cannot be made reproducibly; the campaign
     # always conditions on the seed before anything samples.
     return ValueError(f"{name} has not been conditioned on any data; condition on the seed first")
 
@@ -76,7 +76,7 @@ class BayesianLinearRegression(SurrogateModel):
     response: str = "y"
     n_draws: int = 2000
 
-    data: pd.DataFrame | None = None
+    observations: pd.DataFrame | None = None
     # Closed-form posterior, kept for inspection and testing.
     coef_mean: np.ndarray | None = None  # beta_OLS, intercept first
     coef_cov_unscaled: np.ndarray | None = None  # (X'X)^-1; Cov(beta | sigma^2) = sigma^2 of this
@@ -91,7 +91,7 @@ class BayesianLinearRegression(SurrogateModel):
     def condition(
         self, data: pd.DataFrame, rng: np.random.Generator
     ) -> BayesianLinearRegression:
-        seen = _accumulate(self.data, data)
+        seen = _accumulate(self.observations, data)
         X = self._design(seen)
         y = seen[self.response].to_numpy(dtype=float)
         n, p = X.shape
@@ -114,7 +114,7 @@ class BayesianLinearRegression(SurrogateModel):
 
         return replace(
             self,
-            data=seen,
+            observations=seen,
             coef_mean=mean,
             coef_cov_unscaled=cov,
             noise_shape=shape,
@@ -128,6 +128,10 @@ class BayesianLinearRegression(SurrogateModel):
         return self.coef_draws @ self._design(x).T
 
     @property
+    def data(self) -> pd.DataFrame | None:
+        return self.observations
+
+    @property
     def reliable(self) -> bool:
         # Closed-form posterior: nothing to fail once there is data.
         return self.coef_draws is not None
@@ -135,7 +139,7 @@ class BayesianLinearRegression(SurrogateModel):
 
 @dataclass(frozen=True, slots=True, eq=False)
 class GammaGLMSurrogate(SurrogateModel):
-    """The Gamma/log-link GLM from `engine.glm`, as a loop surrogate.
+    """The Gamma/log-link GLM from `engine.glm`, as a campaign surrogate.
 
     `terms` picks the linear predictor: the default is the full quadratic
     surface (the main model); `("linear",)` is the first-order baseline. Each
@@ -152,11 +156,11 @@ class GammaGLMSurrogate(SurrogateModel):
     chains: int = 4
     target_accept: float = 0.95
 
-    data: pd.DataFrame | None = None
+    observations: pd.DataFrame | None = None
     fit: GammaGLMFit | None = None
 
     def condition(self, data: pd.DataFrame, rng: np.random.Generator) -> GammaGLMSurrogate:
-        seen = _accumulate(self.data, data)
+        seen = _accumulate(self.observations, data)
         fit = fit_gamma_glm(
             seen,
             self.response,
@@ -169,7 +173,7 @@ class GammaGLMSurrogate(SurrogateModel):
             target_accept=self.target_accept,
             random_seed=int(rng.integers(2**31)),
         )
-        return replace(self, data=seen, fit=fit)
+        return replace(self, observations=seen, fit=fit)
 
     def sample(self, x: pd.DataFrame) -> np.ndarray:
         if self.fit is None:
@@ -180,6 +184,10 @@ class GammaGLMSurrogate(SurrogateModel):
         beta = flat["beta"].transpose("sample", "term").to_numpy()
         X = build_design_matrix(x, self.fit.factors, terms=self.terms).X
         return np.exp(intercept[:, None] + beta @ X.T)
+
+    @property
+    def data(self) -> pd.DataFrame | None:
+        return self.observations
 
     @property
     def reliable(self) -> bool:

@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from malt.benchmark.oracle import GammaLikelihood, Oracle
-from malt.benchmark.surrogates import BayesianLinearRegression, GammaGLMSurrogate
+from malt.simulation.oracle import GammaLikelihood, Oracle
+from malt.active_learning.surrogates import BayesianLinearRegression, GammaGLMSurrogate
 from malt.engine.factors import Factor
 
 FACTORS = (Factor("x1", 0.0, 10.0), Factor("x2", 0.1, 10.0, scale="log"))

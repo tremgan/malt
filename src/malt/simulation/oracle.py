@@ -1,6 +1,6 @@
 """Simulated oracles — a known ground-truth surface plus an observation model.
 
-An oracle answers the one question the active-learning loop asks of the
+An oracle answers the one question the active-learning campaign asks of the
 physical world: run this composition, what comes back? It is split in two so
 that the structure and the noise can vary independently:
 

@@ -1,4 +1,4 @@
-"""Loop-level properties whose failure would be silent rather than an error."""
+"""Campaign-level properties whose failure would be silent rather than an error."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from conftest import (
     GRID,
-    BlockDesign,
+    FirstRows,
     CountingModel,
     LinearEnvironment,
     NoiseEnvironment,
@@ -15,7 +15,7 @@ from conftest import (
 )
 
 from malt.active_learning.actors import Environment, Experimenter
-from malt.active_learning.loop import run_loop
+from malt.active_learning.campaign import run_campaign
 from malt.active_learning.termination import MaxRoundsRule
 
 
@@ -28,7 +28,7 @@ def narrow[T](obj: object, cls: type[T]) -> T:
 def run(seed_data, *, model=None, acquisition=None, environment=None, n=3,
         random_seed=0, rule=MaxRoundsRule(4)):
     experimenter = Experimenter(model or CountingModel(), acquisition or RandomPick())
-    return run_loop(
+    return run_campaign(
         experimenter,
         environment or LinearEnvironment(),
         seed_data,
@@ -58,16 +58,6 @@ def test_design_points_keep_their_candidate_index(seed_data):
     journal = run(seed_data, acquisition=RandomPick())
     for r in journal.rounds:
         pd.testing.assert_frame_equal(r.data[["glucose"]], GRID.loc[r.data.index])
-
-
-# Acquisition state carried across rounds
-
-
-def test_acquisition_state_advances_each_round(seed_data):
-    journal = run(seed_data, acquisition=BlockDesign(), n=3, rule=MaxRoundsRule(3))
-    assert [list(r.data.index) for r in journal.rounds] == [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
-    assert [narrow(r.acquisition, BlockDesign).block for r in journal.rounds] == [1, 2, 3]
-    assert journal.acquisition == BlockDesign(0)
 
 
 # Reproducibility
@@ -105,7 +95,7 @@ def test_round_ids_are_unique_uuid4(seed_data):
 def test_arms_see_the_same_noise_however_much_randomness_they_use(seed_data):
     # One arm consumes no randomness choosing points, the other a lot. With a
     # shared stream their observation noise would diverge.
-    frugal = run(seed_data, acquisition=BlockDesign(), environment=NoiseEnvironment())
+    frugal = run(seed_data, acquisition=FirstRows(), environment=NoiseEnvironment())
     greedy = run(seed_data, acquisition=RandomPick(burn=1000), environment=NoiseEnvironment())
     np.testing.assert_array_equal(all_y(frugal), all_y(greedy))
 
@@ -171,7 +161,7 @@ def test_environment_covariates_pass_through(seed_data):
 
 def test_default_rule_runs_ten_rounds(seed_data):
     experimenter = Experimenter(CountingModel(), RandomPick())
-    journal = run_loop(experimenter, LinearEnvironment(), seed_data, 2, random_seed=0)
+    journal = run_campaign(experimenter, LinearEnvironment(), seed_data, 2, random_seed=0)
     assert len(journal.rounds) == 10
     assert journal.stopped_by == (MaxRoundsRule(10),)
 
@@ -183,10 +173,9 @@ def test_rule_is_checked_before_the_first_round(seed_data):
 
 
 def test_experimenter_ends_in_the_journals_last_state(seed_data):
-    experimenter = Experimenter(CountingModel(), BlockDesign())
-    journal = run_loop(
+    experimenter = Experimenter(CountingModel(), FirstRows())
+    journal = run_campaign(
         experimenter, LinearEnvironment(), seed_data, 3,
         random_seed=0, termination_rule=MaxRoundsRule(2),
     )
     assert experimenter.surrogate_model is journal.rounds[-1].surrogate_model
-    assert experimenter.acquisition is journal.rounds[-1].acquisition
