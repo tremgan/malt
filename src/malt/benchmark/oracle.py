@@ -13,8 +13,8 @@ That composition is what lets the same interface cover additive Gaussian noise
 and a GLM-style generative model: additive noise is simply the identity-link
 case, where `f` and the mean coincide.
 
-Draws read numpy's global random state; seed a campaign with
-`np.random.seed` rather than per-likelihood.
+Draws come from a `np.random.Generator` passed to each call, never from
+numpy's global state, so a caller can give the oracle its own stream.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ class Likelihood(Protocol):
     """Defines the noise model for the underlying function. Specifically,
     it defines the conditional distribution p(y | f(x)) for the observed data y given the latent function value f(x)."""
 
-    def sample(self, latent: np.ndarray) -> np.ndarray:
+    def sample(self, latent: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         """Samples from the conditional distribution p(y | f(x)) for the observed data y given the latent function value f(x)."""
         ...
 
@@ -66,8 +66,8 @@ class GaussianLikelihood:
         if not np.isfinite(self.sigma) or self.sigma <= 0:
             raise ValueError(f"sigma must be finite and > 0, got {self.sigma}")
 
-    def sample(self, latent: np.ndarray) -> np.ndarray:
-        return np.random.normal(self.mean(latent), self.sigma)
+    def sample(self, latent: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        return rng.normal(self.mean(latent), self.sigma)
 
     def mean(self, latent: np.ndarray) -> np.ndarray:
         return np.asarray(latent, dtype=float)
@@ -95,10 +95,10 @@ class GammaLikelihood:
         if not np.isfinite(self.alpha) or self.alpha <= 0:
             raise ValueError(f"alpha must be finite and > 0, got {self.alpha}")
 
-    def sample(self, latent: np.ndarray) -> np.ndarray:
+    def sample(self, latent: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         # numpy parameterizes Gamma by shape and scale; scale = mu / alpha is
         # the reciprocal of PyMC's rate, beta = alpha / mu.
-        return np.random.gamma(shape=self.alpha, scale=self.mean(latent) / self.alpha)
+        return rng.gamma(shape=self.alpha, scale=self.mean(latent) / self.alpha)
 
     def mean(self, latent: np.ndarray) -> np.ndarray:
         return np.exp(np.asarray(latent, dtype=float))
@@ -153,41 +153,23 @@ def quadratic_latent(coeffs: np.ndarray, intercept: float = 0.0) -> LatentFuncti
     
     return latent_function
 
-def rbf_gp_latent(length_scale: float, variance: float) -> LatentFunction:
-    """A random latent function sampled from a Radial Basis Function (RBF) Gaussian Process.
-
-    Useful for generating smooth, non-linear surfaces with controlled length scale and variance.
-    """
-    from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import RBF
-
-    kernel = variance * RBF(length_scale=length_scale)
-    gp = GaussianProcessRegressor(kernel=kernel)
-
-    def latent_function(x: pd.DataFrame) -> np.ndarray:
-        # Fit the GP to some random points and predict on the input x
-        random_points = np.random.rand(10, x.shape[1])  # 10 random training points
-        random_values = np.random.rand(10)  # Random values for those points
-        gp.fit(random_points, random_values)
-        return gp.predict(x)
-
-    return latent_function
-
-
+def gp_sampled_latent(kernel: Callable[[pd.DataFrame], np.ndarray], noise: float = 1e-6) -> LatentFunction:
+    ...
+    
 @dataclass(frozen=True, slots=True)
 class Oracle:
 
     latent: LatentFunction
     likelihood: Likelihood
 
-    def sample(self, x: pd.DataFrame) -> np.ndarray:
+    def sample(self, x: pd.DataFrame, rng: np.random.Generator) -> np.ndarray:
         """Run the oracle on a batch of inputs `x`, returning the observed outputs `y`."""
         latent_values = self.latent(x)
-        return self.likelihood.sample(latent_values)
+        return self.likelihood.sample(latent_values, rng)
 
-    def query(self, x: pd.DataFrame) -> np.ndarray:
+    def query(self, x: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
         """Portemanteau of `sample` and `mean`: run the oracle on a batch of inputs `x`, returning the observed outputs `y`."""
-        return self.sample(x)
+        return pd.DataFrame({"y": self.sample(x, rng)})
 
     def mean(self, x: pd.DataFrame) -> np.ndarray:
         """Run the oracle on a batch of inputs `x`, returning the ground truth mean for observed outputs `y`."""
