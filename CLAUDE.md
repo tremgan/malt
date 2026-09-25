@@ -28,7 +28,11 @@ Built:
 - `active_learning/` — the loop's abstractions, the loop itself, the lab
   journal, and termination rules. **Nothing implements the actor ABCs yet**
   except test dummies and the simulated oracle.
-- `benchmark/oracle.py` — a simulated environment with a known ground truth.
+- `benchmark/oracle.py` — a simulated environment with a known ground truth,
+  including `gp_sampled_latent` (a fixed RBF-GP surface via random Fourier features).
+- `benchmark/surrogates.py` — baseline surrogates: Bayesian linear regression
+  (linear or quadratic features, reference prior) and `GammaGLMSurrogate`
+  (any `terms` subset; the default is the main quadratic model).
 - `tests/active_learning/` — 50 tests of loop-level properties, using dummy
   actors (no PyMC).
 
@@ -39,9 +43,9 @@ fixed-design/RSM acquisitions, and an OLS baseline for benchmarking BO against
 iterative DOE. `uncertainty.py`, `batch_effects.py`, `state/` and `mcp_server/`
 are not started.
 
-Known debts: `oracle.gp_sampled_latent` is a stub; `oracle.quadratic_latent`
+Known debts: `oracle.quadratic_latent`
 peaks at the raw-unit origin with no linear or cross terms, so its optimum sits
-in a corner; `glm.py:208,216` have 4 pyright errors from xarray's loose
+in a corner; `glm.py:224,232` have 4 pyright errors from xarray's loose
 `DataTree.__getitem__` typing (fix: `.to_dataset()` on `sample_stats`, not yet
 applied); `benchmark/loop.py` is an empty placeholder.
 
@@ -65,6 +69,7 @@ src/malt/
 
   benchmark/         # simulation and evaluation — test infrastructure, not product
     oracle.py        # Oracle(Environment): latent surface + likelihood
+    surrogates.py    # baseline SurrogateModels for the 2x2 likelihood x features ablation
 
   state/             # (planned) persistence — the source of truth for a real campaign
   mcp_server/        # (planned) agent-facing tools, thin wrappers over the above
@@ -438,7 +443,7 @@ see the sampling-environment note above. Set it once per machine in
 
 ```bash
 uv sync                                          # install, incl. the package itself
-uv run pytest                                    # loop tests; no sampling, no flag needed
+uv run pytest                                    # all tests; the one module that samples sets the flag itself
 uv run --with pyright pyright src tests          # type check in the project env
 PYTENSOR_FLAGS='cxx=' uv run python -m demo.simulate_loop      # not yet written
 PYTENSOR_FLAGS='cxx=' uv run python -m malt.mcp_server.server  # not yet written

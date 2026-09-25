@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import itertools
 import warnings
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -39,6 +39,7 @@ import xarray as xr
 from malt.engine.factors import Factor
 
 __all__ = [
+    "ALL_TERMS",
     "ConvergenceReport",
     "ConvergenceWarning",
     "DesignMatrix",
@@ -53,6 +54,7 @@ __all__ = [
 ]
 
 TermKind = Literal["linear", "quadratic", "interaction"]
+ALL_TERMS: tuple[TermKind, ...] = ("linear", "quadratic", "interaction")
 
 # Priors on the coded scale. Quadratic terms are centred negative on the
 # working assumption that growth surfaces are peaked — a soft prior the data can
@@ -133,7 +135,12 @@ class GammaGLMFit:
         return tuple(f.name for f in self.factors)
 
 
-def build_design_matrix(data: pd.DataFrame, factors: Sequence[Factor]) -> DesignMatrix:
+def build_design_matrix(
+    data: pd.DataFrame,
+    factors: Sequence[Factor],
+    *,
+    terms: Collection[TermKind] = ALL_TERMS,
+) -> DesignMatrix:
     """Build the coded quadratic basis for `factors`.
 
     Each column is encoded to `[-1, +1]` against its factor's declared range
@@ -142,7 +149,15 @@ def build_design_matrix(data: pd.DataFrame, factors: Sequence[Factor]) -> Design
     rows: all linear terms in the caller's factor order, then all squared terms
     in the same order, then all pairwise interactions in `itertools.combinations`
     order.
+
+    `terms` keeps only the listed kinds — e.g. `("linear",)` for a first-order
+    baseline — preserving that order among the ones kept. The default is the
+    full quadratic surface; anything narrower is a comparison model, not a
+    replacement for it.
     """
+    unknown = set(terms) - set(ALL_TERMS)
+    if not terms or unknown:
+        raise ValueError(f"terms must be a non-empty subset of {ALL_TERMS}, got {tuple(terms)}")
     factors = tuple(factors)
     if not factors:
         raise ValueError("at least one factor is required")
@@ -179,10 +194,11 @@ def build_design_matrix(data: pd.DataFrame, factors: Sequence[Factor]) -> Design
         term_names.append(f"{names[a]}:{names[b]}")
         kinds.append("interaction")
 
+    keep = [i for i, kind in enumerate(kinds) if kind in terms]
     return DesignMatrix(
-        X=np.column_stack(columns),
-        term_names=tuple(term_names),
-        term_kinds=tuple(kinds),
+        X=np.column_stack([columns[i] for i in keep]),
+        term_names=tuple(term_names[i] for i in keep),
+        term_kinds=tuple(kinds[i] for i in keep),
         factors=factors,
     )
 
@@ -254,6 +270,7 @@ def build_gamma_glm(
     factors: Sequence[Factor],
     *,
     alpha_prior_sigma: float = 10.0,
+    terms: Collection[TermKind] = ALL_TERMS,
 ) -> GammaGLM:
     """Define the model without sampling it.
 
@@ -265,7 +282,7 @@ def build_gamma_glm(
     posterior. It is exposed for that reason; the default assumes a fairly noisy
     assay, which errs toward more exploration rather than less.
     """
-    design = build_design_matrix(data, factors)
+    design = build_design_matrix(data, factors, terms=terms)
 
     if response not in data.columns:
         raise ValueError(f"response {response!r} not found in data")
@@ -370,6 +387,7 @@ def fit_gamma_glm(
     chains: int = 4,
     target_accept: float = 0.95,
     alpha_prior_sigma: float = 10.0,
+    terms: Collection[TermKind] = ALL_TERMS,
     random_seed: int | None = None,
 ) -> GammaGLMFit:
     """Build and sample in one call, for the common case.
@@ -378,7 +396,9 @@ def fit_gamma_glm(
     to inspect the model, run a prior predictive check, or sample the same
     specification more than once.
     """
-    glm = build_gamma_glm(data, response, factors, alpha_prior_sigma=alpha_prior_sigma)
+    glm = build_gamma_glm(
+        data, response, factors, alpha_prior_sigma=alpha_prior_sigma, terms=terms
+    )
     return sample_gamma_glm(
         glm,
         draws=draws,
