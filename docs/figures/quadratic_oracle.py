@@ -21,7 +21,7 @@ render_surface(
         # diagonal ridge: more glucose only pays off with more nitrogen.
         curvature=np.array([[3.4, -2.2], [-2.2, 3.4]]),
     ),
-    title="A peaked growth surface",
+    title="A realistic synthetic growth surface",
     subtitle="Mean biomass. Quadratic on the log scale, optimum 12 g/L glucose and 2 g/L nitrogen;\n"
     "the diagonal ridge is the interaction: more glucose only pays off with more nitrogen.",
     out=Path(__file__).with_suffix(".png"),

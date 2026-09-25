@@ -4,6 +4,11 @@
 
 ![A peaked mean biomass surface over glucose and nitrogen: beige at the edges, rising to a single green peak of 12 g/L near 12 g/L glucose and 2 g/L nitrogen.](docs/figures/quadratic_oracle.png)
 
+*Synthetic, but shaped like real media responses: each nutrient helps until
+excess inhibits growth, so there is one optimum inside the range, and the best
+glucose level shifts with nitrogen, the way carbon-to-nitrogen balance does in
+real cultures.*
+
 **TL;DR:** malt picks which media compositions to test next, so a campaign
 reaches its best biomass in fewer rounds than a fixed design would take. It fits
 a Bayesian Gamma model to your growth data, which keeps predictions positive and
