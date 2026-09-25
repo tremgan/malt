@@ -4,8 +4,9 @@ Guidance for Claude (or any agent) working in this repository.
 
 ## Project name
 
-MALT (Media Acquisition & Learning Toolkit). Package name `malt`,
-namespaced as `malt.engine`, `malt.state`, `malt.mcp_server`.
+MALT (Media Active-Learning Toolkit). Package name `malt`, namespaced as
+`malt.engine`, `malt.active_learning`, `malt.benchmark` (and, later,
+`malt.state`, `malt.mcp_server`).
 
 ## What this project is
 
@@ -18,44 +19,78 @@ the next batch of experiments. The interface is a set of tools an agent
 calls directly (MCP), with a human approval gate before any physical
 execution — not a dashboard or CLI a human has to drive turn-by-turn.
 
+## Current state
+
+Built:
+
+- `engine/factors.py`, `engine/glm.py` — the `Factor` declaration and the
+  Gamma GLM (definition, sampling, convergence report).
+- `active_learning/` — the loop's abstractions, the loop itself, the lab
+  journal, and termination rules. **Nothing implements the actor ABCs yet**
+  except test dummies and the simulated oracle.
+- `benchmark/oracle.py` — a simulated environment with a known ground truth.
+- `tests/active_learning/` — 50 tests of loop-level properties, using dummy
+  actors (no PyMC).
+
+Next, in order: a candidate grid in `factors.py`; a conjugate Bayesian linear
+regression surrogate and Thompson sampling, with a `y = x1 + x2` demo as the
+first end-to-end run; then the Gamma GLM surrogate, Monte Carlo UCB/EI,
+fixed-design/RSM acquisitions, and an OLS baseline for benchmarking BO against
+iterative DOE. `uncertainty.py`, `batch_effects.py`, `state/` and `mcp_server/`
+are not started.
+
+Known debts: `oracle.gp_sampled_latent` is a stub; `oracle.quadratic_latent`
+peaks at the raw-unit origin with no linear or cross terms, so its optimum sits
+in a corner; `glm.py:208,216` have 4 pyright errors from xarray's loose
+`DataTree.__getitem__` typing (fix: `.to_dataset()` on `sample_stats`, not yet
+applied); `benchmark/loop.py` is an empty placeholder.
+
 ## Architecture
 
 ```
-malt/
-  engine/          # the modeling core — no I/O, no orchestration, pure functions
-    glm.py         # design matrix, model definition, NUTS sampling, convergence report
-    diagnostics.py # residual plots, mean-variance check, OLS/negativity baseline
-    uncertainty.py # posterior -> predictions: mu at query points, epistemic/aleatoric split
-    acquisition.py # UCB / EI / PI / Thompson, single-point and batch variants
-    batch_effects.py # random-intercept batch model, marginal predictive draws
-    factors.py     # Factor (name/range/units/scale) — the feasible region
+src/malt/
+  engine/            # the modeling core — no I/O, no orchestration, pure functions
+    factors.py       # Factor (name/range/units/scale) — the feasible region
+    glm.py           # design matrix, model definition, NUTS sampling, convergence report
+    uncertainty.py   # (planned) posterior -> mu at query points, epistemic/aleatoric split
+    acquisition.py   # (planned) MC UCB/EI/PI scores over posterior draws
+    batch_effects.py # (planned) random-intercept batch model, marginal predictive draws
 
-  state/           # persistence layer — the source of truth for a running loop
-    schema.py      # rounds / batches / experiments / model_versions
-    store.py       # read/write against the state store (swap backend freely)
+  active_learning/   # the loop: abstractions + orchestration, no modeling maths
+    actors.py        # SurrogateModel, Acquisition, Environment ABCs; Experimenter
+    loop.py          # loop_step, run_loop, LabJournal, Seed, RoundEntry
+    termination.py   # TerminationRule ABC, composition, and the rule library
+    surrogates.py    # (planned) SurrogateModel implementations wrapping engine/
+    acquisitions.py  # (planned) Acquisition implementations wrapping engine/
 
-  mcp_server/      # the agent-facing interface — thin wrappers around engine/ + state/
-    tools.py       # suggest_batch, ingest_results, get_diagnostics, get_status, ...
-    server.py      # MCP server entrypoint
+  benchmark/         # simulation and evaluation — test infrastructure, not product
+    oracle.py        # Oracle(Environment): latent surface + likelihood
 
-demo/            # simulated end-to-end loop (no real lab hardware assumed)
-  simulate_loop.py
+  state/             # (planned) persistence — the source of truth for a real campaign
+  mcp_server/        # (planned) agent-facing tools, thin wrappers over the above
 
-reports/         # generated, not hand-maintained — see "Reporting" below
+tests/active_learning/  # conftest.py holds dummy actors; test_*.py hold the tests
+demo/                   # (planned) simulated end-to-end loop
+reports/                # generated, not hand-maintained — see "Reporting"
 ```
 
-**Dependency direction is one-way**: `malt.mcp_server` depends on
-`malt.engine` and `malt.state`; `malt.engine` never imports from
-`malt.mcp_server` or `malt.state`. `engine` functions are pure — data in,
-results out, no side effects — so they're independently testable and
-reusable outside the MCP context (e.g. directly in a notebook).
+**Dependency direction is one-way**: `engine` imports nothing from the rest
+of `malt`. `active_learning` imports `engine`. `benchmark` imports
+`active_learning` (the oracle implements `Environment`). `state` and
+`mcp_server` sit on top. Never import upward.
 
-The one sanctioned exception to "no side effects": `engine` may raise a
-`warnings.warn` to flag a result the caller must not trust silently (see
-`glm.ConvergenceWarning`). A warning mutates no state, touches no I/O, and
-is suppressible — and it's the lesser evil against handing back an unmixed
-chain that looks like a normal return value. Don't extend this to logging,
-file writes, or progress output.
+**Maths in `engine/`, loop classes in `active_learning/`.** A surrogate's
+fitting code and an acquisition's scoring function are pure functions in
+`engine/`, usable from a notebook with no loop. The classes that implement
+the actor ABCs — holding data seen so far, advancing state, drawing seeds from
+an `rng` — live in `active_learning/`.
+
+`engine` functions are pure — data in, results out, no side effects. The one
+sanctioned exception: `engine` may raise a `warnings.warn` to flag a result
+the caller must not trust silently (see `glm.ConvergenceWarning`). A warning
+mutates no state, touches no I/O, and is suppressible — and it's the lesser
+evil against handing back an unmixed chain that looks like a normal return
+value. Don't extend this to logging, file writes, or progress output.
 
 **`glm.py` owns the fit; `uncertainty.py` owns what you do with it.** The
 model specification, sampling, and convergence checking all live in
@@ -73,6 +108,75 @@ points and split epistemic from aleatoric variance; it should refuse or
 loudly warn on a fit whose `convergence.converged` is `False` rather than
 re-deriving the check (`glm.check_convergence` is public for this).
 
+## The active-learning loop
+
+```
+Experimenter = SurrogateModel + Acquisition  --propose x-->  Environment
+             <------------------- observe (x, y) --------------
+```
+
+- **Actors are ABCs, not Protocols.** `SurrogateModel`, `Acquisition`,
+  `Environment` (and `benchmark.oracle.Likelihood`) are abstract base classes
+  with `__slots__ = ()`, so `slots=True` dataclass subclasses stay slotted.
+  Implementations subclass explicitly. An ABC only checks that methods exist,
+  not their signatures — pyright (`typeCheckingMode = "standard"`) catches an
+  incompatible override such as a `query` missing `rng`.
+- **Surrogates and acquisitions are immutable values.** `condition` returns a
+  new model; `propose` returns `(x, successor)`. This is what lets the journal
+  keep one snapshot per round by reference. `Experimenter` is the single
+  mutable holder: `propose(n, rng)` swaps in the successor rule, `observe(data,
+  rng)` swaps in the conditioned model.
+- **`condition` must be associative**: `m.condition(d1).condition(d2)` equals
+  `m.condition(concat(d1, d2))`. Models without a closed-form update (the MCMC
+  GLM) meet this by keeping their prior config and all data seen, and refitting
+  on everything. Don't "optimize" with a Laplace/normal carry-forward — see the
+  modeling conventions below.
+- **`sample(x)` returns joint draws of mu, shape `(n_draws, len(x))`, and row
+  `s` is the same surface on every call and every `x`.** Thompson sampling takes
+  a row's argmax across candidates, which is only meaningful if the row is one
+  surface. A point-estimate model (OLS) is a legal surrogate with `n_draws == 1`;
+  model-driven acquisitions must degrade gracefully on it, not error.
+- **`reliable` means "the fit worked"**, e.g. passed the convergence gate — not
+  "has uncertainty".
+- **`Environment.query(x, rng)` returns a DataFrame**, one row per input row by
+  position: a `y` column plus any covariates the environment knows (batch,
+  operator, inoculum). The loop joins it to `x` **positionally**
+  (`x.join(obs.set_axis(x.index))`), because proposals picked off a candidate
+  grid carry non-contiguous index labels and an index-aligned join silently
+  pairs y with the wrong x. `set_axis` raises on a row-count mismatch; `join`
+  raises on a column clash with a factor.
+- **Batch labels come from the environment, never the loop.** A batch is the
+  classic DOE block — runs sharing session, operator, cell state — and only the
+  lab knows it. A synthetic environment chooses its own convention. The
+  surrogate decides which columns to group by. The loop's round UUID is the
+  round's identity in the journal, not a batch label.
+- **Randomness enters only through `run_loop(random_seed=...)`**, which spawns
+  three independent streams (`default_rng(seed).spawn(3)`): experimenter,
+  environment, round IDs. Never use numpy's global state or `uuid4()`. Never
+  give two generators the same seed (identical sequences, correlated with each
+  other). The environment's own stream is what makes benchmark arms paired: two
+  experimenters with the same seed see identical observation noise however much
+  randomness they consume.
+- **The seed is not a round.** `run_loop` takes `seed_data`, conditions on it,
+  and records it as `LabJournal.seed`. A benchmark gives every arm the same seed.
+- **`LabJournal` is the campaign's complete record**: `random_seed`,
+  `batch_size`, the prior, the starting acquisition, the `Seed`, the
+  `termination_rule`, one `RoundEntry` per round (`id`, `data`, and the model
+  and acquisition *after* the round, so the last entry is the current state),
+  and `stopped_by`. Termination rules read it; the loop needs it by design.
+- **Termination rules are pure functions of the journal**, subclass
+  `TerminationRule`, and compose with `&`/`|` **only with other rules** —
+  anything else is a `TypeError`, so every part of a criterion is a named,
+  comparable, picklable object. Purity is load-bearing: `fired(journal)`
+  re-evaluates the rule on the finished journal to fill `stopped_by`, which is
+  only correct if the rule gives the same answer twice. A rule that needs
+  randomness derives it from the journal (see `RandomStopRule`). `run_loop` takes
+  a single rule, default `MaxRoundsRule(10)`; combine with `UnreliableFitRule()`
+  so a run can't propose from a failed fit.
+- **`run_loop` is the simulation path only.** It queries synchronously. A real
+  campaign proposes, waits for approval and results, then observes — the same
+  two `Experimenter` methods, days apart, driven by `state/` and the MCP tools.
+
 ## Design principles (don't violate these without discussion)
 
 - **Agent-native, not human-native-with-an-API-bolted-on.** The MCP tools
@@ -87,7 +191,7 @@ re-deriving the check (`glm.check_convergence` is public for this).
   automatically. That transition is a deliberate human checkpoint (however
   lightweight) before any real reagents/time are committed. Do not build a
   path that skips this, even for a "just for testing" convenience — write a
-  simulator instead (see `demo/`).
+  simulator instead (see `benchmark/`).
 - **Every batch is a first-class object**, carrying a batch ID from
   proposal through results. This is what makes the batch-effect random
   intercept model possible after the fact — don't flatten batches into a
@@ -95,10 +199,11 @@ re-deriving the check (`glm.check_convergence` is public for this).
 - **Uncertainty fed to acquisition functions must be marginal, not just
   fixed-effect.** Once `batch_effects.py` is in play, `get_uncertainty_map`
   and the acquisition functions must integrate over the batch random
-  effect's estimated variance (a new batch hasn't been observed yet, so its
-  offset is itself uncertain) — not just the coefficient posterior. Using
-  fixed-effect-only uncertainty here is a silent correctness bug, not a
-  simplification.
+  effect's estimated variance for any batch level not yet observed (a new
+  batch's offset is itself uncertain) — not just the coefficient posterior.
+  For a level already seen and reused (e.g. a known operator), condition on
+  its estimated offset instead. Using fixed-effect-only uncertainty for an
+  unseen level is a silent correctness bug, not a simplification.
 
 ## Modeling conventions
 
@@ -116,15 +221,14 @@ re-deriving the check (`glm.check_convergence` is public for this).
   normal/Laplace stand-in. `glm.py` returns genuine posterior draws over
   the GLM coefficients, and `uncertainty.py` turns those into draws over mu
   at any query point — sampled from the model, not derived from
-  `cov_params()`. A
-  Laplace/normal approximation on this dataset underestimated epistemic
-  uncertainty at the edge of the design space relative to the full
-  posterior (90% CI width on mu ~15 vs. ~72 at the same grid point), which
-  changed the UCB-recommended next point — so treat the approximation as
-  unreliable for feeding acquisition functions, not just slower to obtain.
-  A Laplace/normal approximation may still be useful as a **fast sanity
-  check or a fallback when PyMC/sampling isn't available in the runtime**,
-  but it is not the default and must be clearly labeled as an
+  `cov_params()`. A Laplace/normal approximation on this dataset
+  underestimated epistemic uncertainty at the edge of the design space
+  relative to the full posterior (90% CI width on mu ~15 vs. ~72 at the same
+  grid point), which changed the UCB-recommended next point — so treat the
+  approximation as unreliable for feeding acquisition functions, not just
+  slower to obtain. A Laplace/normal approximation may still be useful as a
+  **fast sanity check or a fallback when PyMC/sampling isn't available in
+  the runtime**, but it is not the default and must be clearly labeled as an
   approximation wherever it's used instead.
 - **Encode predictors to coded units before fitting, always.** Raw-scale
   media concentrations (e.g. 0-10) make a quadratic linear predictor badly
@@ -196,7 +300,8 @@ re-deriving the check (`glm.check_convergence` is public for this).
   it as a request to link a library named `d64`. Disabling the C backend
   costs ~nothing here because nutpie never used it for the heavy work.
   Note `ldflags=` is *not* a PyTensor flag and does not fix this; it
-  silently falls back to the Python VM and looks like it worked.
+  silently falls back to the Python VM and looks like it worked. (This is
+  documented here only, not in the README.)
 - **Always check convergence before trusting a fit.** The gate is strict
   0 divergences, max r_hat < 1.01, and min ESS >= 1000 — **bulk and tail**.
   Tail ESS is gated because acquisition is Monte Carlo over draws and reads
@@ -209,7 +314,9 @@ re-deriving the check (`glm.check_convergence` is public for this).
   draws and raises `ConvergenceWarning` on failure — it does **not** raise,
   because the diverged draws are exactly what you need to diagnose the fit.
   A caller (including an agent driving the AL loop) must be able to tell a
-  trustworthy fit from a broken one without re-deriving the check.
+  trustworthy fit from a broken one without re-deriving the check. In the
+  loop, the GLM surrogate exposes this as `reliable`, and
+  `UnreliableFitRule` stops a campaign on it.
 - Quadratic response-surface terms (linear + squared + pairwise
   interactions) are the default functional form for the linear predictor,
   matching Box-Behnken-style designs. Don't add higher-order terms without
@@ -239,6 +346,18 @@ re-deriving the check (`glm.check_convergence` is public for this).
   posterior is lognormal-shaped under the log link, not normal, so the
   closed-form Gaussian formulas don't apply cleanly.
 
+## Simulated environments
+
+`benchmark.oracle.Oracle(latent, likelihood)` splits the truth in two:
+`latent(x)` is the surface on the link scale (log biomass under a log link),
+and a `Likelihood` maps it to a mean and draws around it. `GammaLikelihood`
+uses the same parameterization as the GLM, so a recovery test isolates
+inference from family mismatch — to simulate misspecification, vary the
+latent, not the likelihood. `Oracle.query` returns `DataFrame({"y": ...})`;
+`Oracle.mean` is the ground truth a benchmark scores against (regret is
+measured on the true mean at the recommended point, never on the best
+observed y, which rewards noise).
+
 ## Reporting
 
 `reports/` content is generated by `get_diagnostics` / round-completion
@@ -251,30 +370,39 @@ remember to check.
 
 ## Testing
 
+- **Loop tests use dummy actors** (`tests/active_learning/conftest.py`) so they
+  run in under a second without PyMC. Each dummy exists to make one loop
+  property observable; the tests target failures that would be *silent*:
+  rows paired with the wrong results, dropped acquisition state, broken
+  reproducibility, unpaired noise across arms, journal entries aliasing one
+  mutable object, termination truth tables and `stopped_by`. When changing the
+  loop, confirm a test fails if you reintroduce the bug it guards.
+- **Contract tests for implementations** (planned): one parametrized suite run
+  against every `SurrogateModel` and `Acquisition` — associativity of
+  `condition`, stable joint draws from `sample`, `self` unchanged by
+  `condition`, proposals inside the declared `Factor` ranges, graceful
+  handling of single-draw models.
 - `engine/` functions get unit tests against simulated data with a known
-  ground truth (reuse the simulation approach from the exploratory work:
-  simulate a peaked Gamma/log-link surface, fit, check recovered
+  ground truth (simulate a peaked Gamma/log-link surface, fit, check recovered
   coefficients are close to truth).
-- `mcp_server/` tools get tested against the state store with a fixture
-  loop (a few rounds of proposed → approved → ingested) to confirm
-  resumability — kill the "loop" mid-round and confirm state reconstructs
-  correctly.
 - `glm.py` needs a test that fits on the actual BB seed dataset (or an
   equivalent fixture) and asserts convergence diagnostics pass (0
-  divergences, max r_hat < 1.01) — this is a regression test against the
-  coded-encoding requirement above, since reverting to raw-scale
-  predictors will silently break convergence without raising an error.
-  Pair it with the negative control, which is what makes the test mean
-  something: the same data with raw-scale quadratic terms gives ~2000
-  divergences, r_hat ~1.53, and min ESS ~7, so all gates fire.
+  divergences, max r_hat < 1.01) — a regression test against the
+  coded-encoding requirement above, since reverting to raw-scale predictors
+  will silently break convergence without raising an error. Pair it with the
+  negative control, which is what makes the test mean something: the same
+  data with raw-scale quadratic terms gives ~2000 divergences, r_hat ~1.53,
+  and min ESS ~7, so all gates fire.
 - `uncertainty.py` needs a test that a query grid encoded through the fit's
   own `Factor` tuple reproduces the training design matrix when handed back
   the training points — the cheapest guard against a term-order or
   re-encoding mismatch, both of which fail silently.
-- Any new acquisition function needs a test confirming it: (a) never
-  recommends a point outside the declared feasible region, (b) degrades
-  gracefully (doesn't error) when posterior draws are unavailable yet
-  (e.g. before the first model fit).
+- `mcp_server/` tools get tested against the state store with a fixture
+  loop (a few rounds of proposed → approved → ingested) to confirm
+  resumability — kill the "loop" mid-round and confirm state reconstructs
+  correctly.
+- In tests, narrow ABC-typed values to the dummy class with `isinstance`
+  (the `narrow` helper) or `cast`, rather than relaxing pyright for `tests/`.
 
 ## What NOT to do
 
@@ -282,14 +410,19 @@ remember to check.
   thin generated-report view is fine; a maintained stateful UI is not
   the point of this repo.
 - Don't let any component call out to real lab hardware or a real LIMS
-  directly from `engine/` or `mcp_server/tools.py` without going through
-  the `approved` gate in `state/`.
+  directly from `engine/`, `active_learning/` or `mcp_server/tools.py`
+  without going through the `approved` gate in `state/`. `run_loop` is for
+  simulated environments only.
 - Don't fit plain OLS as the "default" model anywhere in `engine/` —
-  it exists only as an explicit comparison baseline in `diagnostics.py`
-  for the negativity/heteroscedasticity demonstration.
+  it exists only as an explicit comparison baseline (the RSM benchmark arm,
+  and the negativity/heteroscedasticity demonstration in `diagnostics.py`).
 - Don't add a seed-design generator back to `engine/` (see above), and
   don't reimplement the convergence check — `glm.check_convergence` is
   public precisely so `uncertainty.py` and `diagnostics.py` don't.
+- Don't draw randomness anywhere but from the `rng` a method is handed —
+  no `np.random.*` global calls, no `uuid4()`, no unseeded generators.
+- Don't compose termination rules with bare callables, and don't give a rule
+  hidden state (counters, clocks) — it breaks `stopped_by`.
 - Don't reach for RL. This is a static-function, expensive-evaluation,
   no-persistent-state optimization problem — Bayesian optimization is the
   right tool. If a future extension genuinely introduces sequential state
@@ -304,12 +437,14 @@ see the sampling-environment note above. Set it once per machine in
 `~/.pytensorrc` to avoid prefixing every invocation.
 
 ```bash
-uv sync                                              # install, incl. the package itself
-PYTENSOR_FLAGS='cxx=' uv run pytest                  # not yet scaffolded — no tests, no pytest dep
+uv sync                                          # install, incl. the package itself
+uv run pytest                                    # loop tests; no sampling, no flag needed
+uv run --with pyright pyright src tests          # type check in the project env
 PYTENSOR_FLAGS='cxx=' uv run python -m demo.simulate_loop      # not yet written
 PYTENSOR_FLAGS='cxx=' uv run python -m malt.mcp_server.server  # not yet written
 ```
 
-Current state: only `engine/glm.py` exists. A fit of a 27-point, 9-term
-Gamma GLM takes ~2s, so verification is cheap — prefer actually running a
-fit over reasoning about whether one would work.
+pyright skips directories whose names start with `.` — code placed there is
+silently unchecked. A fit of a 27-point, 9-term Gamma GLM takes ~2s, so
+verification is cheap — prefer actually running a fit over reasoning about
+whether one would work.
