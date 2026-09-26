@@ -150,41 +150,12 @@ experimenter the same one.
 `run_campaign` takes one termination rule, checked before every round. Rules
 combine with `&` and `|` into a new rule, so a target is capped by `|`-ing it
 with `MaxRoundsRule`; the example above stops early if a fit fails its
-convergence gate. The default is ten rounds. A rule is a function of the
-journal and holds no state of its own, and only rules combine with rules, so
-every part of a stopping criterion is a named object.
+convergence gate. The default is ten rounds.
 
-### The lab journal
-
-> Remember kids, the only difference between screwing around and science is
-> writing it down.
-
-`run_campaign` returns a `LabJournal` with enough in it to replay the campaign:
-the prior and the acquisition rule, the seed and the model fitted to it, and
-one entry per round. Each round records its data and the model after
-conditioning on that data, so the last entry is always the campaign's current
-state. Models are immutable, so keeping one per round costs a reference, not a
-copy. Acquisition rules are stateless and stay fixed for the whole campaign;
-whatever they learn between rounds, they learn through the model.
-
-The journal also records the termination rule and, in `stopped_by`, which
-parts of it fired. Rules are pure functions of the journal, so evaluating them
-on the finished journal gives the same answer they gave when the campaign stopped.
-
-Each round also carries a UUID. The environment decides what its rows record
-beyond the response; a real lab might add operator or inoculum, which is what a
-batch-effect model will group by.
-
-### Randomness
-
-`random_seed` is the only way randomness enters. The campaign splits it into
-independent streams for the experimenter, the environment, and round IDs, and
-the journal records it, so a simulated campaign reruns identically.
-
-Separate streams matter for benchmarks. Two experimenters run with the same
-seed see the same observation noise, however much randomness their own models
-use, so a difference between them is a difference between strategies and not
-luck of the draw.
+`run_campaign` returns a `LabJournal` holding each round's data and the model
+fitted after it. The same `random_seed` reproduces a simulated campaign
+exactly, and gives two experimenters the same measurement noise, so benchmark
+arms are compared on equal terms.
 
 ## Simulated environments
 
@@ -231,8 +202,8 @@ environment = Oracle(latent, GammaLikelihood(alpha=20))
 ```
 
 For a surface nobody wrote by hand, `gp_sampled_latent` draws one from a
-Gaussian process with an RBF kernel. The draw happens once, from the `rng` you
-pass, and the result is a fixed function you can query anywhere. Lengthscale is
+Gaussian process with an RBF kernel, fixed once drawn, so you can query it
+anywhere. Lengthscale is
 measured in coded units, so it means the same thing on a linear factor and a log
 one. No quadratic fits such a surface exactly, which makes it a fair test of how
 the models cope with a truth outside their family.
