@@ -97,10 +97,11 @@ response at `x`, one row per draw, and the same row is the same surface on every
 call. Thompson sampling depends on that: it picks each draw's best point, which
 only means something if the whole row comes from one surface.
 
-An acquisition rule gets the model and returns the next batch. Model-driven
-rules (Thompson, UCB, expected improvement) read it; a fixed design ignores it.
-That is what lets a Bayesian-optimization campaign and an iterative DOE campaign
-run through the same code and be compared on equal terms.
+An acquisition rule returns the next batch. Every rule is handed the current
+model, but only model-driven rules (expected improvement, UCB, Thompson) use
+it; random sampling and a fixed design ignore it. That shared interface is what
+lets a Bayesian-optimization campaign and an iterative DOE campaign run through
+the same code and be compared on equal terms.
 
 ### Running a campaign
 
