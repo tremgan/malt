@@ -55,7 +55,7 @@ def render_surface(
     fig = plt.figure(figsize=(8, 6.4), dpi=200)
     ax = cast(Axes3D, fig.add_axes((0.0, 0.0, 1.0, 0.9), projection="3d"))
     ax.set_box_aspect((1, 1, height), zoom=1.12)  # pyright: ignore[reportArgumentType] — stub types zoom as int
-    ax.plot_surface(Z1, Z2, mu, cmap=WHEAT, linewidth=0, antialiased=True)
+    ax.plot_surface(Z1, Z2, mu, cmap=WHEAT, linewidth=0, antialiased=True, rasterized=True)
 
     glucose_ticks = [0.5, 5, 10, 15, 20]
     nitrogen_ticks = [0.1, 1, 10]

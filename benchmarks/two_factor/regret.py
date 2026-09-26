@@ -1,9 +1,9 @@
-"""Regret benchmark in 3 factors: BO (Gamma GLM + q-NEI) against iterative RSM and random.
+"""Regret benchmark in 2 factors: BO (Gamma GLM + q-NEI) against iterative RSM and random.
 
-    uv run python -m benchmarks.three_factor.regret --replicates 20
+    uv run python -m benchmarks.two_factor.regret --replicates 20
 
-Glucose, nitrogen and phosphate; a 17-run local CCD seed around the house
-recipe, then 4 rounds of 16 runs (a 3-factor CCD is 14 runs; two centre
+Glucose and nitrogen, as in `rounds.py`; an 11-run local CCD seed around the
+house recipe, then 4 rounds of 10 runs (a 2-factor CCD is 8 runs; two centre
 replicates fill the batch). See `benchmarks.harness` for how arms are paired
 and scored.
 """
@@ -21,7 +21,6 @@ from malt.simulation.regret import Arm
 FACTORS = (
     Factor("glucose", 0.5, 20.0, units="g/L"),
     Factor("nitrogen", 0.1, 10.0, units="g/L", scale="log"),
-    Factor("phosphate", 0.05, 2.0, units="g/L", scale="log"),
 )
 
 BENCHMARK = Benchmark(
@@ -31,7 +30,7 @@ BENCHMARK = Benchmark(
         Arm("RSM, BLR + CCD", BayesianLinearRegression(FACTORS, "quadratic"), CentralComposite(FACTORS)),
         Arm("Random, Gamma GLM", GammaGLMSurrogate(FACTORS), RandomBatch(FACTORS)),
     ),
-    batch=16,
+    batch=10,
     rounds=4,
     results=Path(__file__).parent / "results",
 )

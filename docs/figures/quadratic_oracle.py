@@ -1,4 +1,4 @@
-"""Render docs/figures/quadratic_oracle.png: a single peaked growth surface (README headline).
+"""Render docs/figures/quadratic_oracle.svg: a single peaked growth surface (README headline).
 
     uv run python docs/figures/quadratic_oracle.py
 """
@@ -24,7 +24,7 @@ render_surface(
     title="A realistic synthetic growth surface",
     subtitle="Mean biomass. Quadratic on the log scale, optimum 12 g/L glucose and 2 g/L nitrogen;\n"
     "the diagonal ridge is the interaction: more glucose only pays off with more nitrogen.",
-    out=Path(__file__).with_suffix(".png"),
+    out=Path(__file__).with_suffix(".svg"),
     height=0.5,
     azim=-62,  # close to side-on, so the ridge isn't foreshortened
 )

@@ -158,7 +158,7 @@ class GammaGLMSurrogate(SurrogateModel):
     terms: tuple[TermKind, ...] = ALL_TERMS
     response: str = "y"
     alpha_prior_sigma: float = 10.0
-    draws: int = 1000
+    draws: int = 2000  # per chain; 1000 left clustered q-NEI designs just short of the ESS gate
     tune: int = 1000
     chains: int = 4
     target_accept: float = 0.95

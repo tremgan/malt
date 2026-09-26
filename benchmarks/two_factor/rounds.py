@@ -20,7 +20,7 @@ where its mean crosses zero. Both columns share one colour scale down the
 rows, so rounds compare directly. Dots are the runs observed so far; rings
 are the batch that round's model proposes next; the star is the true optimum.
 
-Writes `results/rounds_<arm>_<surface>.png`.
+Writes `results/rounds_<arm>_<surface>.svg`.
 """
 
 from __future__ import annotations
@@ -54,13 +54,8 @@ from malt.engine.acquisition import central_composite  # noqa: E402
 from malt.engine.factors import Factor, candidate_grid, decode_design  # noqa: E402
 from malt.engine.glm import ConvergenceWarning  # noqa: E402
 from malt.simulation.regret import true_optimum  # noqa: E402
-from malt.simulation.oracle import (  # noqa: E402
-    GammaLikelihood,
-    LatentFunction,
-    Oracle,
-    gp_sampled_latent,
-    quadratic_latent,
-)
+from malt.simulation.oracle import GammaLikelihood, Oracle  # noqa: E402
+from benchmarks.harness import gp_surfaces, quadratic_surfaces  # noqa: E402
 
 RESULTS = Path(__file__).parent / "results"
 SEED = 7
@@ -73,17 +68,8 @@ BATCH = 8  # a 2-factor CCD is exactly 8 runs
 ROUNDS = 4
 
 
-def quadratic_surface(rng: np.random.Generator) -> LatentFunction:
-    coded = rng.uniform(-0.6, 0.6, len(FACTORS))
-    optimum = {f.name: float(f.decode(coded[j])) for j, f in enumerate(FACTORS)}
-    return quadratic_latent(FACTORS, optimum=optimum, peak=np.log(10.0), curvature=1.0)
-
-
-def gp_surface(rng: np.random.Generator) -> LatentFunction:
-    return gp_sampled_latent(FACTORS, rng, lengthscale=0.6, sd=0.5, mean=np.log(5.0))
-
-
-SURFACES = {"quadratic": quadratic_surface, "gp": gp_surface}
+# The same surface families as the regret benchmark.
+SURFACES = {"quadratic": quadratic_surfaces(FACTORS), "gp": gp_surfaces(FACTORS)}
 
 
 def seed_design() -> pd.DataFrame:
@@ -241,7 +227,7 @@ def main() -> None:
         termination_rule=UnreliableFitRule() | MaxRoundsRule(ROUNDS),
     )
     RESULTS.mkdir(parents=True, exist_ok=True)
-    out = RESULTS / f"rounds_{args.arm}_{args.surface}.png"
+    out = RESULTS / f"rounds_{args.arm}_{args.surface}.svg"
     plot(journal, oracle, args.arm, args.surface, out)
     print(f"{len(journal.rounds)} rounds, stopped by {journal.stopped_by}; wrote {out}")
 

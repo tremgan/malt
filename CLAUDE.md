@@ -52,20 +52,30 @@ Built:
   acquisition's choices, not a model's recommendation, so a model-free rule
   scores the same whatever model it's paired with. `run_arm` runs and scores
   one campaign; rounds a failed fit prevented are NaN and flagged `stopped`.
-- `benchmarks/three_factor/regret.py` (top level, not the package) — the regret benchmark:
+- `benchmarks/harness.py` (top level, not the package) — the paired regret
+  benchmark as a `Benchmark` config plus `main`: surface families, the local
+  CCD seed, caching, plotting. `benchmarks/two_factor/regret.py` and
+  `benchmarks/three_factor/regret.py` are short configs over it (2 factors,
+  batch 10; 3 factors, batch 16). `--workers N` runs replicates in parallel
+  processes; results are identical to a sequential run because every
+  replicate is seeded by (surface, replicate), not by scheduling order.
+  The GLM surrogate samples 2000 draws per chain: at 1000, q-NEI's clustered
+  designs fell just short of the ESS gate and ~15% of its 2-factor campaigns
+  were stopped, which biased the comparison (survivorship).
+- `benchmarks/three_factor/regret.py` — the headline regret benchmark:
   Gamma GLM + q-NEI vs. BLR + CCD (iterative RSM) vs. Gamma GLM + random,
   3 factors, 16 runs a round, 4 rounds, 20 paired replicates, on a tilted
   quadratic surface and a GP surface. Every campaign starts from a 17-run
   face-centred CCD around a fixed off-centre "house recipe" (coded −0.4,
   half-width 0.4), which is what a lab would actually have. Caches each run
   under `benchmarks/three_factor/results/runs/` (gitignored); writes `results/regret.csv`
-  and `results/regret.png`, which is the README's headline figure — a rerun
-  changes the README.
+  and `results/regret.svg`. The README is deliberately minimal while the
+  benchmarks are in flux: no figures or result claims until they settle.
 - `benchmarks/two_factor/rounds.py` — round-by-round 2-factor figures (`--arm qnei|rsm`,
   `--surface quadratic|gp`): per round, true mean | posterior mean |
   posterior uncertainty (sd of log mu for the GLM, sd of mu for BLR), with
   observed runs, next batch and true optimum. Writes
-  `results/rounds_<arm>_<surface>.png`.
+  `results/rounds_<arm>_<surface>.svg`.
 - `tests/active_learning/` — campaign-level properties using dummy actors (no
   PyMC), plus the acquisition rules against `BayesianLinearRegression`.
 
@@ -99,8 +109,8 @@ What the benchmark has shown so far (don't relearn these):
   ESS gate; an 11-run CCD cleared it comfortably.
 
 Next: a `y = x1 + x2` demo as the first end-to-end run; a one-shot DOE arm
-(`FixedDesign`) in the benchmark — the README still says malt needs "fewer
-experiments than a fixed design", which is untested. `uncertainty.py`,
+(`FixedDesign`) in the benchmark, which "fewer experiments than a fixed
+design" would need. `uncertainty.py`,
 `batch_effects.py`, `state/` and `mcp_server/` are not started.
 
 Known debts: `glm.py:226,234` have 4 pyright errors from xarray's loose
@@ -134,9 +144,9 @@ src/malt/
   mcp_server/        # (planned) agent-facing tools, thin wrappers over the above
 
 tests/<package>/        # one directory per package; active_learning/conftest.py holds dummy actors
-benchmarks/             # run scripts, each folder with its own results/:
-  two_factor/           #   rounds.py: round-by-round posterior maps, for looking at
-  three_factor/         #   regret.py: the paired regret benchmark (README headline)
+benchmarks/             # harness.py (shared regret benchmark); each folder has its own results/:
+  two_factor/           #   regret.py, and rounds.py: round-by-round posterior maps
+  three_factor/         #   regret.py: the paired regret benchmark
 demo/                   # (planned) simulated end-to-end campaign
 reports/                # generated, not hand-maintained — see "Reporting"
 ```
@@ -516,7 +526,8 @@ see the sampling-environment note above. Set it once per machine in
 uv sync                                          # install, incl. the package itself
 uv run pytest                                    # all tests; tests/conftest.py sets the flag
 uv run --with pyright pyright src tests benchmarks  # type check in the project env
-uv run python -m benchmarks.three_factor.regret --replicates 20  # regret benchmark, ~30 min; resumes from its cache
+uv run python -m benchmarks.three_factor.regret --replicates 20 --workers 8  # regret benchmark; resumes from its cache
+uv run python -m benchmarks.two_factor.regret --replicates 20 --workers 8    # same, 2 factors
 uv run python -m benchmarks.two_factor.rounds --arm qnei --surface gp  # one round-by-round figure, ~10 s
 PYTENSOR_FLAGS='cxx=' uv run python -m demo.simulate_campaign      # not yet written
 PYTENSOR_FLAGS='cxx=' uv run python -m malt.mcp_server.server  # not yet written

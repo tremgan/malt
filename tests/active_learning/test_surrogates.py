@@ -121,7 +121,7 @@ def test_glm_recovers_known_coefficients(linear_glm):
 def test_glm_draws_are_positive_and_stable(linear_glm, gamma_data):
     x = gamma_data.iloc[:5]
     draws = linear_glm.sample(x)
-    assert draws.shape == (4000, 5)
+    assert draws.shape == (8000, 5)  # 4 chains x 2000 draws
     assert (draws > 0).all()
     np.testing.assert_array_equal(draws, linear_glm.sample(x))
 

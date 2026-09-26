@@ -5,4 +5,4 @@ __pycache__/
 .DS_Store
 .claude/settings.local.json
 reports/
-benchmarks/three_factor/results/runs/
+benchmarks/*/results/runs/
