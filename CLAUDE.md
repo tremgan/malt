@@ -23,9 +23,13 @@ execution — not a dashboard or CLI a human has to drive turn-by-turn.
 
 Built:
 
-- `engine/factors.py`, `engine/glm.py` — the `Factor` declaration, the
-  `candidate_grid` helper, and the Gamma GLM (definition, sampling,
-  convergence report).
+- `engine/factors.py`, `engine/glm.py` — the `Factor` declaration,
+  `decode_design`, `candidate_grid` (for plots only), and the Gamma GLM
+  (definition, sampling, convergence report, and `coefficient_draws` /
+  `predict_mu` for mu at query points).
+- `engine/search.py` — grid-free search of the coded box: `space_filling`
+  (scrambled Sobol from an `rng`, or the plain sequence) and `maximize`
+  (space-filling start, L-BFGS-B polish within bounds).
 - `engine/acquisition.py` — batch acquisition maths over a `(S, N)` draws
   matrix: greedy q-NEI and q-UCB, batch Thompson, and central composite placement.
 - `active_learning/` — the campaign's abstractions, the campaign itself, the lab
@@ -35,26 +39,71 @@ Built:
   `QNoisyExpectedImprovement`, `QUpperConfidenceBound`, `ThompsonSampling`,
   `CentralComposite` (iterative RSM: a CCD at the posterior mean's argmax), and
   the model-free baselines `RandomBatch` and `FixedDesign` (one-shot DOE).
+  **No rule searches a fixed grid**: rules take `factors`, draw fresh Sobol
+  candidates from their `rng` each round, and find argmaxes by continuous
+  search; `RandomBatch` is uniform per axis in coded units. A grid puts a
+  floor under every argmax and lets a lucky snap score as optimal.
 - `simulation/oracle.py` — a simulated lab with a known ground truth,
   including `quadratic_latent` (a single tilted peak in coded units, in the GLM's
   family) and `gp_sampled_latent` (a fixed RBF-GP surface via random Fourier features).
-- `simulation/regret.py` — scoring against the ground truth: every arm recommends its posterior-mean
-  argmax, scored by relative regret on the oracle's true mean; `run_arm` runs
-  and scores one campaign, carrying the last recommendation forward if a
-  failed fit stops it.
-- `benchmarks/regret.py` (top level, not the package) — the run script: Gamma
-  GLM + q-NEI vs. BLR + CCD (iterative RSM) vs. Gamma GLM + random, on
-  quadratic and GP surfaces, paired per replicate. Caches each run under
-  `benchmarks/results/runs/` (gitignored); writes `results/regret.csv` and
-  `results/regret.png`.
+- `simulation/regret.py` — scoring against the ground truth: **cumulative
+  regret** over the runs an arm chose, `R_T = Σ_t 1 − f*(x_t)/max f*` (the
+  shared seed counts 0; `max f*` by continuous search). It scores the
+  acquisition's choices, not a model's recommendation, so a model-free rule
+  scores the same whatever model it's paired with. `run_arm` runs and scores
+  one campaign; rounds a failed fit prevented are NaN and flagged `stopped`.
+- `benchmarks/three_factor/regret.py` (top level, not the package) — the regret benchmark:
+  Gamma GLM + q-NEI vs. BLR + CCD (iterative RSM) vs. Gamma GLM + random,
+  3 factors, 16 runs a round, 4 rounds, 20 paired replicates, on a tilted
+  quadratic surface and a GP surface. Every campaign starts from a 17-run
+  face-centred CCD around a fixed off-centre "house recipe" (coded −0.4,
+  half-width 0.4), which is what a lab would actually have. Caches each run
+  under `benchmarks/three_factor/results/runs/` (gitignored); writes `results/regret.csv`
+  and `results/regret.png`, which is the README's headline figure — a rerun
+  changes the README.
+- `benchmarks/two_factor/rounds.py` — round-by-round 2-factor figures (`--arm qnei|rsm`,
+  `--surface quadratic|gp`): per round, true mean | posterior mean |
+  posterior uncertainty (sd of log mu for the GLM, sd of mu for BLR), with
+  observed runs, next batch and true optimum. Writes
+  `results/rounds_<arm>_<surface>.png`.
 - `tests/active_learning/` — campaign-level properties using dummy actors (no
   PyMC), plus the acquisition rules against `BayesianLinearRegression`.
 
-Next: a `y = x1 + x2` demo as the first end-to-end run; a one-shot DOE arm
-(`FixedDesign`) in the benchmark. `uncertainty.py`, `batch_effects.py`,
-`state/` and `mcp_server/` are not started.
+What the benchmark has shown so far (don't relearn these):
 
-Known debts: `glm.py:224,232` have 4 pyright errors from xarray's loose
+- **A full-range CCD seed solves an in-family quadratic by itself** (~2%
+  regret before any round), so it can't separate arms. Benchmarks need a
+  local seed; that's also the realistic case.
+- **Don't make the quadratic harder with sharper peaks.** Beyond a
+  curvature of ~2 (coded units) the coefficient priors, not the
+  acquisition, decide the outcome: seed-only regret jumped from ~1% to ~70%
+  at curvature 3 on an in-family surface.
+- **Score runs, not recommendations.** An earlier version scored each arm's
+  posterior-mean recommendation. That made "Gamma GLM + random" beat
+  "BLR + CCD": a 2x2 ablation showed the gap was the *model* (BLR on raw
+  biomass is misspecified even on the quadratic surface, whose truth is
+  exp(quadratic)), not the acquisition — the CCD acquisition beat random with
+  either model. Recommendation regret also lets random catch up once the
+  model is right, since spread-out runs pin the peak well. Cumulative regret
+  isolates the acquisition: random is linear (~0.66 per run), q-NEI flattens
+  to ~0.05 per run on the quadratic surface after one round.
+- **The arms still differ in model as well as acquisition** (q-NEI and
+  random use the GLM, RSM uses BLR). The experimenter also shares one random
+  stream between model and acquisition, so a model-free rule draws different
+  points beside different models (same distribution, not paired point for
+  point); splitting that stream would fix it.
+- **Fixed-radius iterative RSM repeats itself**: when the posterior-mean
+  optimum sits near a boundary, `CentralComposite` proposes the identical
+  design round after round (pure replication).
+- **Seed fits need a balanced design**: a random 10-run 2-D seed sat at the
+  ESS gate; an 11-run CCD cleared it comfortably.
+
+Next: a `y = x1 + x2` demo as the first end-to-end run; a one-shot DOE arm
+(`FixedDesign`) in the benchmark — the README still says malt needs "fewer
+experiments than a fixed design", which is untested. `uncertainty.py`,
+`batch_effects.py`, `state/` and `mcp_server/` are not started.
+
+Known debts: `glm.py:226,234` have 4 pyright errors from xarray's loose
 `DataTree.__getitem__` typing (fix: `.to_dataset()` on `sample_stats`, not yet
 applied).
 
@@ -64,9 +113,10 @@ applied).
 src/malt/
   engine/            # the modeling core — no I/O, no orchestration, pure functions
     factors.py       # Factor (name/range/units/scale) — the feasible region
-    glm.py           # design matrix, model definition, NUTS sampling, convergence report
+    glm.py           # design matrix, model definition, NUTS sampling, convergence report, predict_mu
     uncertainty.py   # (planned) posterior -> mu at query points, epistemic/aleatoric split
     acquisition.py   # greedy q-NEI/q-UCB, batch Thompson, CCD placement over posterior draws
+    search.py        # space_filling (Sobol) and maximize over the coded box: no grids
     batch_effects.py # (planned) random-intercept batch model, marginal predictive draws
 
   active_learning/   # the campaign: abstractions + orchestration, no modeling maths
@@ -78,13 +128,15 @@ src/malt/
 
   simulation/        # the simulated lab — test infrastructure, not product
     oracle.py        # Oracle(Environment): latent surface + likelihood
-    regret.py        # Arm, recommend, relative_regret, run_arm: scoring against the truth
+    regret.py        # Arm, true_optimum, instantaneous_regret, run_arm: cumulative regret
 
   state/             # (planned) persistence — the source of truth for a real campaign
   mcp_server/        # (planned) agent-facing tools, thin wrappers over the above
 
 tests/<package>/        # one directory per package; active_learning/conftest.py holds dummy actors
-benchmarks/             # run scripts and their results (python -m benchmarks.regret)
+benchmarks/             # run scripts, each folder with its own results/:
+  two_factor/           #   rounds.py: round-by-round posterior maps, for looking at
+  three_factor/         #   regret.py: the paired regret benchmark (README headline)
 demo/                   # (planned) simulated end-to-end campaign
 reports/                # generated, not hand-maintained — see "Reporting"
 ```
@@ -119,7 +171,10 @@ the split: `alpha_prior_sigma` is a definition parameter, `draws`/`chains`/
 `target_accept`/`random_seed` are sampling parameters.
 `sample_gamma_glm` returns a `GammaGLMFit` value carrying posterior draws, the
 term-name contract, the `Factor` declarations, and a `ConvergenceReport`.
-`uncertainty.py` consumes that value to predict mu at unobserved query
+`coefficient_draws(fit)` flattens the draws once and `predict_mu(intercept,
+beta, X)` turns them into mu at a design matrix — `GammaGLMSurrogate` caches
+the former at `condition` time and calls the latter, so it doesn't
+re-derive the inverse link. `uncertainty.py` consumes the fit to predict mu at unobserved query
 points and split epistemic from aleatoric variance; it should refuse or
 loudly warn on a fit whose `convergence.converged` is `False` rather than
 re-deriving the check (`glm.check_convergence` is public for this).
@@ -161,8 +216,8 @@ Experimenter = SurrogateModel + Acquisition  --propose x-->  Environment
   position: a `y` column plus any covariates the environment knows (batch,
   operator, inoculum). The campaign joins it to `x` **positionally**
   (`x.join(obs.set_axis(x.index))`), because proposals picked off a candidate
-  grid carry non-contiguous index labels and an index-aligned join silently
-  pairs y with the wrong x. `set_axis` raises on a row-count mismatch; `join`
+  set can carry non-contiguous index labels and an index-aligned join
+  silently pairs y with the wrong x. `set_axis` raises on a row-count mismatch; `join`
   raises on a column clash with a factor.
 - **Batch labels come from the environment, never the campaign.** A batch is the
   classic DOE block — runs sharing session, operator, cell state — and only the
@@ -356,9 +411,11 @@ Experimenter = SurrogateModel + Acquisition  --propose x-->  Environment
   repo is rounds 2..N — and a real campaign often arrives with historical
   data or a house design anyway. So `engine/` ingests a seed dataset rather
   than generating one: no design-generator module, and no DOE dependency.
-  Building one ad hoc is two lines (`pyDOE3.bbdesign` plus `Factor.decode`,
-  recipe in the `factors.py` docstring); if `demo/` later needs one, add the
-  dependency there rather than here. `Factor.decode` exists so that mapping
+  Building one ad hoc is one line: `decode_design(factors,
+  central_composite(centre, radius, n_center=3))` for a CCD (the benchmark
+  scripts do this), or `pyDOE3.bbdesign` through `decode_design` for a
+  Box-Behnken; if `demo/` later needs pyDOE3, add the dependency there
+  rather than here. `Factor.decode` exists so that mapping
   puts center points in the right place under log scale.
 - Acquisition functions are computed by **Monte Carlo directly over
   posterior draws**, not closed-form Gaussian EI/PI formulas — mu's
@@ -374,8 +431,8 @@ uses the same parameterization as the GLM, so a recovery test isolates
 inference from family mismatch — to simulate misspecification, vary the
 latent, not the likelihood. `Oracle.query` returns `DataFrame({"y": ...})`;
 `Oracle.mean` is the ground truth a benchmark scores against (regret is
-measured on the true mean at the recommended point, never on the best
-observed y, which rewards noise).
+measured on the true mean at the points a campaign ran, never on observed y,
+which rewards noise).
 
 ## Reporting
 
@@ -458,7 +515,9 @@ see the sampling-environment note above. Set it once per machine in
 ```bash
 uv sync                                          # install, incl. the package itself
 uv run pytest                                    # all tests; tests/conftest.py sets the flag
-uv run --with pyright pyright src tests          # type check in the project env
+uv run --with pyright pyright src tests benchmarks  # type check in the project env
+uv run python -m benchmarks.three_factor.regret --replicates 20  # regret benchmark, ~30 min; resumes from its cache
+uv run python -m benchmarks.two_factor.rounds --arm qnei --surface gp  # one round-by-round figure, ~10 s
 PYTENSOR_FLAGS='cxx=' uv run python -m demo.simulate_campaign      # not yet written
 PYTENSOR_FLAGS='cxx=' uv run python -m malt.mcp_server.server  # not yet written
 ```

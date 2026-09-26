@@ -29,7 +29,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-__all__ = ["Factor", "FactorScale", "candidate_grid"]
+__all__ = ["Factor", "FactorScale", "candidate_grid", "decode_design"]
 
 FactorScale = Literal["linear", "log"]
 
@@ -124,3 +124,9 @@ def candidate_grid(factors: Sequence[Factor], levels: int) -> pd.DataFrame:
     coded = np.linspace(-1.0, 1.0, levels)
     rows = np.array(list(itertools.product(coded, repeat=len(factors))))
     return pd.DataFrame({f.name: f.decode(rows[:, j]) for j, f in enumerate(factors)})
+
+
+def decode_design(factors: Sequence[Factor], coded: np.ndarray) -> pd.DataFrame:
+    """A coded design `(n, len(factors))` in real units, one column per factor."""
+    coded = np.atleast_2d(coded)
+    return pd.DataFrame({f.name: f.decode(coded[:, j]) for j, f in enumerate(factors)})

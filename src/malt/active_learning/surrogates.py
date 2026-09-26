@@ -19,15 +19,22 @@ from the prior on all of it, which is what makes `condition` associative.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal, cast
+from typing import Literal
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 
 from malt.active_learning.actors import SurrogateModel
 from malt.engine.factors import Factor
-from malt.engine.glm import ALL_TERMS, GammaGLMFit, TermKind, build_design_matrix, fit_gamma_glm
+from malt.engine.glm import (
+    ALL_TERMS,
+    GammaGLMFit,
+    TermKind,
+    build_design_matrix,
+    coefficient_draws,
+    fit_gamma_glm,
+    predict_mu,
+)
 
 __all__ = ["BayesianLinearRegression", "GammaGLMSurrogate"]
 
@@ -158,6 +165,10 @@ class GammaGLMSurrogate(SurrogateModel):
 
     observations: pd.DataFrame | None = None
     fit: GammaGLMFit | None = None
+    # Flattened once per fit, so `sample` is a matrix product even when an
+    # optimizer calls it hundreds of times.
+    intercept_draws: np.ndarray | None = None
+    beta_draws: np.ndarray | None = None
 
     def condition(self, data: pd.DataFrame, rng: np.random.Generator) -> GammaGLMSurrogate:
         seen = _accumulate(self.observations, data)
@@ -173,17 +184,14 @@ class GammaGLMSurrogate(SurrogateModel):
             target_accept=self.target_accept,
             random_seed=int(rng.integers(2**31)),
         )
-        return replace(self, observations=seen, fit=fit)
+        intercept, beta = coefficient_draws(fit)
+        return replace(self, observations=seen, fit=fit, intercept_draws=intercept, beta_draws=beta)
 
     def sample(self, x: pd.DataFrame) -> np.ndarray:
-        if self.fit is None:
+        if self.fit is None or self.intercept_draws is None or self.beta_draws is None:
             raise _unconditioned(type(self).__name__)
-        posterior = cast(xr.DataTree, self.fit.posterior["posterior"]).to_dataset()
-        flat = posterior.stack(sample=("chain", "draw"))
-        intercept = flat["intercept"].to_numpy()
-        beta = flat["beta"].transpose("sample", "term").to_numpy()
         X = build_design_matrix(x, self.fit.factors, terms=self.terms).X
-        return np.exp(intercept[:, None] + beta @ X.T)
+        return predict_mu(self.intercept_draws, self.beta_draws, X)
 
     @property
     def data(self) -> pd.DataFrame | None:

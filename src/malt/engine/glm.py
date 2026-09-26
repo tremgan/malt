@@ -28,7 +28,7 @@ import itertools
 import warnings
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import arviz as az
 import numpy as np
@@ -49,7 +49,9 @@ __all__ = [
     "build_design_matrix",
     "build_gamma_glm",
     "check_convergence",
+    "coefficient_draws",
     "fit_gamma_glm",
+    "predict_mu",
     "sample_gamma_glm",
 ]
 
@@ -407,3 +409,24 @@ def fit_gamma_glm(
         target_accept=target_accept,
         random_seed=random_seed,
     )
+
+
+def coefficient_draws(fit: GammaGLMFit) -> tuple[np.ndarray, np.ndarray]:
+    """The posterior's coefficient draws as flat arrays: intercept `(S,)` and beta `(S, n_terms)`.
+
+    Chains are concatenated in order, so draw `s` is the same across calls.
+    Flatten once and reuse: stacking the posterior is the slow part of
+    predicting at many points.
+    """
+    posterior = cast(xr.DataTree, fit.posterior["posterior"]).to_dataset()
+    flat = posterior.stack(sample=("chain", "draw"))
+    return flat["intercept"].to_numpy(), flat["beta"].transpose("sample", "term").to_numpy()
+
+
+def predict_mu(intercept: np.ndarray, beta: np.ndarray, X: np.ndarray) -> np.ndarray:
+    """Draws of mu at the rows of design matrix `X`: `exp(intercept + X beta)`, shape `(S, len(X))`.
+
+    `X` must come from `build_design_matrix` with the fit's own factors and
+    terms, or the columns will not line up with `beta`.
+    """
+    return np.exp(intercept[:, None] + beta @ X.T)

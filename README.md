@@ -2,18 +2,25 @@
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
-![A peaked mean biomass surface over glucose and nitrogen: beige at the edges, rising to a single green peak of 12 g/L near 12 g/L glucose and 2 g/L nitrogen.](docs/figures/quadratic_oracle.png)
+![Two panels of cumulative regret against round: mean over 20 simulated campaigns, with shaded 90% confidence intervals for the mean. On a single-peak surface, malt's q-NEI flattens after one round and ends at 12 optimal runs' worth of biomass lost, against 24 for iterative RSM and 43 for random sampling, which grows in a straight line. On a GP-sampled surface all three start alike; q-NEI bends away to 30, against 36 for iterative RSM and 42 for random.](benchmarks/three_factor/results/regret.png)
 
-*Synthetic, but shaped like real media responses: each nutrient helps until
-excess inhibits growth, so there is one optimum inside the range, and the best
-glucose level shifts with nitrogen, the way carbon-to-nitrogen balance does in
-real cultures.*
+*Simulated campaigns over glucose, nitrogen and phosphate, 20 per panel, each
+starting from the same 17-run design around a house medium and adding 16 runs a
+round. Every run a campaign chooses adds its regret, the share of the best
+achievable biomass it gave up, so the curves count optimal runs' worth of
+biomass lost; a campaign that learns bends away from a straight line. Lines
+are the mean over the 20 campaigns and the bands are 90% confidence intervals
+for that mean, not the spread of single campaigns. Left, the true surface is a
+single peak, quadratic in log biomass; right, it is a GP draw no quadratic
+fits. Iterative RSM is the classical workflow:
+least squares on a quadratic, then a central composite design around its
+predicted optimum each round. Regenerate with `python -m benchmarks.three_factor.regret`.*
 
 **TL;DR:** malt picks which media compositions to test next, so a campaign
-reaches its best biomass in fewer rounds than a fixed design would take. It fits
-a Bayesian Gamma model to your growth data, which keeps predictions positive and
-lets noise scale with yield, then proposes the batch where that model is least
-certain or most promising. Nothing reaches the lab until a person approves the
+reaches its best biomass in fewer rounds than iterative response-surface
+methodology would take. It fits a Bayesian Gamma model to your growth data,
+which keeps predictions positive and lets noise scale with yield, then proposes
+the batch where that model is least certain or most promising. Nothing reaches the lab until a person approves the
 batch. The model, the campaign and its acquisition rules exist; the state store
 and the agent-facing tools come next.
 
@@ -43,7 +50,7 @@ Early. What exists:
 - `malt.engine.glm` fits a Gamma/log-link response surface and reports whether the sampler converged
 - `malt.active_learning` defines the campaign: the interfaces its actors implement, the campaign that runs them, a journal that records each round, rules for when to stop, and the batch acquisition rules
 - `malt.simulation.oracle` simulates an environment with a known ground truth, for testing the campaign without a lab
-- `malt.simulation.regret` scores campaigns against that ground truth; `python -m benchmarks.regret` runs the comparison
+- `malt.simulation.regret` scores campaigns against that ground truth; `python -m benchmarks.three_factor.regret` runs the comparison
 
 Simulated campaigns run end to end. The batch-effect model, the state store,
 and the MCP server come next.
@@ -116,23 +123,25 @@ journal = run_campaign(
 
 The acquisition rules live in `malt.active_learning.acquisitions`:
 
-- `QNoisyExpectedImprovement(candidates)` picks the batch one point at a time,
+- `QNoisyExpectedImprovement(factors)` picks the batch one point at a time,
   each maximizing the batch's expected improvement over the best result so far.
   It spreads the batch over competing hypotheses about where the peak is.
-- `QUpperConfidenceBound(candidates, beta)` does the same for an upper
+- `QUpperConfidenceBound(factors, beta)` does the same for an upper
   confidence bound; `beta` sets how much it favours uncertain regions.
-- `ThompsonSampling(candidates)` takes the best point of one plausible surface
+- `ThompsonSampling(factors)` takes the best point of one plausible surface
   per batch slot.
-- `CentralComposite(factors, candidates)` places a central composite design
+- `CentralComposite(factors)` places a central composite design
   around the model's current best guess: iterative response-surface
   methodology.
 
-Two baselines ignore the model: `RandomBatch(candidates)`, the floor any rule
-must beat, and `FixedDesign(factors, design)`, which runs a design chosen up
+Two baselines ignore the model: `RandomBatch(factors)`, uniform on every axis
+and the floor any rule must beat, and `FixedDesign(factors, design)`, which runs a design chosen up
 front (a Box-Behnken or CCD over the full ranges) the way most labs do.
 
-`candidates` is any frame of feasible compositions; `candidate_grid(factors,
-levels)` from `malt.engine.factors` builds a full-factorial one.
+None of them searches a fixed grid. The model-driven rules score a fresh set
+of space-filling points each round and find the model's best guess by
+continuous optimization, so no lattice limits how close to the optimum a
+campaign can get. Log-scale factors are covered evenly in log space.
 
 The seed is not a round. It is the data a campaign starts from, usually a
 Box-Behnken or similar design, or historical runs, and a benchmark gives every
@@ -199,8 +208,15 @@ the likelihood.
 `quadratic_latent` is a single peak in coded units, set by where the optimum is,
 how high it is, and how sharply it falls away; off-diagonal curvature tilts it.
 It is the shape a growth response is expected to have near an optimum, and
-exactly the family the Gamma GLM fits. The figure at the top is one
-(`docs/figures/quadratic_oracle.py`).
+exactly the family the Gamma GLM fits. This is one
+(`docs/figures/quadratic_oracle.py`):
+
+![A peaked mean biomass surface over glucose and nitrogen: beige at the edges, rising to a single green peak of 12 g/L near 12 g/L glucose and 2 g/L nitrogen.](docs/figures/quadratic_oracle.png)
+
+*Synthetic, but shaped like real media responses: each nutrient helps until
+excess inhibits growth, so there is one optimum inside the range, and the best
+glucose level shifts with nitrogen, the way carbon-to-nitrogen balance does in
+real cultures.*
 
 ```python
 from malt.simulation.oracle import GammaLikelihood, Oracle, quadratic_latent

@@ -501,6 +501,7 @@ source = { editable = "." }
 dependencies = [
     { name = "pymc", extra = ["nutpie"] },
     { name = "scikit-learn" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -513,6 +514,7 @@ dev = [
 requires-dist = [
     { name = "pymc", extras = ["nutpie"], specifier = ">=6.3.2" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
+    { name = "scipy", specifier = ">=1.18.1" },
 ]
 
 [package.metadata.requires-dev]
