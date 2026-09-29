@@ -42,11 +42,12 @@ uv sync
 uv run pytest
 ```
 
-## Using it
+## Using it in a lab
 
-Declare the factors, hand it the runs you already have, and ask for the next
-batch. There is no campaign object to drive and nothing that talks to a lab:
-`propose` returns a frame, and what happens to it is yours.
+malt does not talk to your hardware and does not schedule anything. It reads the
+runs you have already done and hands back the next batch to run. What happens to
+that batch is yours: someone approves it, someone pipettes it, and the results
+come back whenever they come back.
 
 ```python
 import numpy as np
@@ -65,11 +66,13 @@ FACTORS = (
 rng = np.random.default_rng(0)
 lab = Experimenter(GammaGLMSurrogate(FACTORS), QNoisyExpectedImprovement(FACTORS))
 
-lab.observe(pd.read_csv("runs.csv"), rng)  # past runs: a column per factor, plus y
+lab.observe(pd.read_csv("runs.csv"), rng)  # every run you have done so far
 if not lab.surrogate_model.reliable:       # the MCMC convergence gate
     raise SystemExit("fit did not converge; do not run this batch")
 
-print(lab.propose(6, rng).round(2))
+batch = lab.propose(6, rng)
+batch.to_csv("batch_07.csv", index=False)
+print(batch.round(2))
 ```
 
 Starting from 11 runs around a house recipe of about 3 g/L glucose and 0.2 g/L
@@ -88,12 +91,57 @@ nitrogen, which yielded 0.04 to 0.45 g/L of biomass:
 Several of those sit on a bound, which is the right answer and not a bug: every
 run so far has been poor and none has shown where the response turns over, so
 the batch leaves the house recipe and probes the top of the allowed range, while
-keeping two points back where it suspects the peak already is.
+keeping two points back where it suspects the peak already is. `Factor` bounds
+are the only thing keeping a proposal inside what you can actually pipette, so
+set them to the range you are willing to run.
 
-Measure the six, append them to `runs.csv` with their biomass, and call
-`observe` then `propose` again. `Factor` bounds are the only thing keeping a
-proposal inside what you can actually pipette, so set them to the range you are
-willing to run.
+Once the batch has been run and the biomass typed in, the next round is the same
+two calls:
+
+```python
+lab.observe(pd.read_csv("batch_07_done.csv"), rng)  # the new rows only
+batch = lab.propose(6, rng)
+```
+
+```
+   glucose  nitrogen
+0    16.49      1.96
+1    20.00      0.91
+2    14.37      2.82
+3    15.30      2.32
+4    13.52      3.86
+5    18.29      1.66
+```
+
+Six more runs was enough to see the response turn over, so the second batch
+comes off the ceiling and gathers around 15 g/L glucose and 2 to 4 g/L nitrogen.
+One point still goes to the glucose bound, because nothing yet rules out more.
+
+`observe` accumulates, so hand it the new rows rather than the whole file again:
+re-observing 11 runs it has already seen leaves it twice as sure as it should
+be. If you would rather not track which rows are new, throw the `Experimenter`
+away and rebuild it from the whole file. Conditioning is associative, so both
+routes give the same posterior to the last digit, and there is no state to
+recover after a crash beyond the file itself.
+
+### What it needs from you
+
+- **One row per run**, a column per factor plus the readout. Columns it does not
+  recognise are ignored, so an existing sheet with operator, date or notes works
+  as it is.
+- **A strictly positive readout.** The likelihood is Gamma, so zero or negative
+  values are refused rather than quietly fitted. Call it `y`, or say which
+  column it is with `GammaGLMSurrogate(FACTORS, response="OD600")`.
+- **More runs than the model has terms.** A full quadratic over `k` factors has
+  `2k + k(k-1)/2` of them, so two factors need at least 6 runs and three need 10.
+  Below that, start first-order with `GammaGLMSurrogate(FACTORS, terms=("linear",))`
+  and move to the quadratic once you have the runs for it. A balanced design
+  fits better than the same number of scattered points.
+- **Ranges you are willing to pipette**, one `Factor` each. Use `scale="log"` for
+  anything spanning an order of magnitude or more: a factor over 0.1 to 10 g/L
+  has an arithmetic centre of 5.05 and a geometric one of 1.0, and centre points
+  land in very different places depending on which you meant. Historical runs
+  from outside the range you declare are still fine to fit on.
 
 ## Benchmarks
 
