@@ -33,7 +33,7 @@ state store and the agent-facing tools come next.
 
 ## Install
 
-Needs [uv](https://docs.astral.sh/uv/)
+Needs [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ```bash
 git clone https://github.com/tremgan/malt.git
