@@ -241,6 +241,4 @@ would execute one that a human has already approved. The approval does not becom
 a function call, and nothing in `engine` or `active_learning` will reach for a
 robot.
 
-**A one-shot design arm in the benchmark.** `FixedDesign` exists but is not in any
-benchmark, so the comparison the benchmarks section admits is missing, against a
-Box-Behnken or CCD run in a single block, stays missing until it is.
+
