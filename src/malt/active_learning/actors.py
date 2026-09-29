@@ -66,6 +66,51 @@ class SurrogateModel(ABC):
         """
         ...
 
+    def thinned(self, n_draws: int) -> Self:
+        """This model carrying about `n_draws` of its draws, for optimizing an acquisition.
+
+        An optimizer evaluates the acquisition hundreds of times at single
+        points, and every draw is multiplied through on each one. A few hundred
+        draws are enough to locate an acquisition's optimum — BoTorch defaults
+        to 128-512 base samples for the same reason — while the full posterior
+        is what the reported answer should be computed from.
+
+        Returns `self` by default, which is correct and merely slower: using
+        every draw is the more accurate answer, so a model that cannot thin
+        cheaply loses nothing but time. Thinning must be a **stride over frozen
+        draws, never a resample**, so that row `s` is the same surface before
+        and after and repeated calls agree.
+        """
+        return self
+
+    def sample_jacobian(self, x: pd.DataFrame) -> np.ndarray:
+        """Derivative of `sample` with respect to each factor, in real units: `(n_draws, len(x), k)`.
+
+        `x` has exactly one column per factor, and the last axis follows its
+        column order. Row `s` is the derivative of row `s` of `sample`, on the
+        same surface — so a gradient-based optimizer walks one fixed surface per
+        draw, not a resampled one.
+
+        This default is central finite differences over `sample`, with a step
+        relative to each value's magnitude. It is here so that every surrogate
+        works with a gradient-based acquisition, including a baseline or a test
+        dummy; it costs `2k` `sample` calls per evaluation, so a model with a
+        closed-form derivative should override it. Correctness, not speed, is
+        the reason it exists.
+        """
+        values = x.to_numpy(dtype=float)
+        # Cube root of machine epsilon: the step that balances truncation
+        # against round-off for a central difference.
+        step = np.cbrt(np.finfo(float).eps) * np.maximum(np.abs(values), 1.0)
+        columns = []
+        for j in range(values.shape[1]):
+            shift = np.zeros_like(values)
+            shift[:, j] = step[:, j]
+            plus = self.sample(pd.DataFrame(values + shift, columns=x.columns))
+            minus = self.sample(pd.DataFrame(values - shift, columns=x.columns))
+            columns.append((plus - minus) / (2.0 * step[:, j]))
+        return np.stack(columns, axis=-1)
+
     @property
     @abstractmethod
     def data(self) -> pd.DataFrame | None:

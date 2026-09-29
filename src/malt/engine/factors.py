@@ -106,6 +106,25 @@ class Factor:
             )
         return (real - self.center) / ((self.high - self.low) / 2)
 
+    def encode_derivative(self, real: np.ndarray) -> np.ndarray:
+        """`d(coded)/d(real)` at `real`, elementwise — the chain-rule factor for `encode`.
+
+        The two conversion directions are not symmetric, so get them the right
+        way round: a gradient in coded units becomes one in real units by
+        **multiplying** by this (`dmu/dx = dmu/dz * dz/dx`), and a gradient in
+        real units becomes one in coded units by **dividing** by it.
+
+        Constant under linear scale; proportional to `1 / real` under log scale,
+        which is why a coded-space search is evenly conditioned over a range
+        spanning orders of magnitude and a real-space one is not.
+        """
+        real = np.asarray(real, dtype=float)
+        if self.scale == "log":
+            if np.any(real <= 0):
+                raise ValueError(f"{self.name}: log scale requires strictly positive values")
+            return 2.0 / (real * (math.log(self.high) - math.log(self.low)))
+        return np.full(real.shape, 2.0 / (self.high - self.low))
+
     def contains(self, value: np.ndarray) -> np.ndarray:
         """Whether values lie in the feasible range, elementwise."""
         value = np.asarray(value, dtype=float)

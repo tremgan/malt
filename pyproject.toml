@@ -23,5 +23,11 @@ dev = [
     "pytest>=9.1.1",
 ]
 
+[tool.pytest.ini_options]
+# `benchmarks` is an importable top-level package (see benchmarks/*/regret.py),
+# but it is not installed, so pytest needs the repo root on the path to let a
+# test reuse a measurement harness from it.
+pythonpath = ["."]
+
 [tool.pyright]
 typeCheckingMode = "standard"

@@ -50,8 +50,10 @@ __all__ = [
     "build_gamma_glm",
     "check_convergence",
     "coefficient_draws",
+    "design_jacobian",
     "fit_gamma_glm",
     "predict_mu",
+    "predict_mu_grad",
     "sample_gamma_glm",
 ]
 
@@ -137,6 +139,36 @@ class GammaGLMFit:
         return tuple(f.name for f in self.factors)
 
 
+def _term_layout(
+    names: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[TermKind, ...], tuple[tuple[int, ...], ...]]:
+    """The canonical term order: each term's name, kind, and the factor indices it multiplies.
+
+    All linear terms in factor order, then all squared terms in the same order,
+    then all pairwise interactions in `itertools.combinations` order. A squared
+    term lists its factor twice, so a term's column is the product over its
+    indices and its derivative follows by the product rule.
+
+    This is the contract downstream code rebuilds query rows against.
+    `build_design_matrix` and `design_jacobian` are its only readers, which is
+    what keeps them from drifting apart.
+    """
+    p = len(names)
+    layout: list[tuple[str, TermKind, tuple[int, ...]]] = [
+        *((names[j], "linear", (j,)) for j in range(p)),
+        *((f"{names[j]}^2", "quadratic", (j, j)) for j in range(p)),
+        *(
+            (f"{names[a]}:{names[b]}", "interaction", (a, b))
+            for a, b in itertools.combinations(range(p), 2)
+        ),
+    ]
+    return (
+        tuple(name for name, _, _ in layout),
+        tuple(kind for _, kind, _ in layout),
+        tuple(source for _, _, source in layout),
+    )
+
+
 def build_design_matrix(
     data: pd.DataFrame,
     factors: Sequence[Factor],
@@ -181,28 +213,54 @@ def build_design_matrix(
     # coded value, which the row-count check below catches as unidentifiable.
     z = np.column_stack([f.encode(raw[:, j]) for j, f in enumerate(factors)])
 
-    p = len(factors)
-    columns = [z[:, j] for j in range(p)]
-    term_names = list(names)
-    kinds: list[TermKind] = ["linear"] * p
-
-    for j, name in enumerate(names):
-        columns.append(z[:, j] ** 2)
-        term_names.append(f"{name}^2")
-        kinds.append("quadratic")
-
-    for a, b in itertools.combinations(range(p), 2):
-        columns.append(z[:, a] * z[:, b])
-        term_names.append(f"{names[a]}:{names[b]}")
-        kinds.append("interaction")
-
+    term_names, kinds, sources = _term_layout(names)
     keep = [i for i, kind in enumerate(kinds) if kind in terms]
     return DesignMatrix(
-        X=np.column_stack([columns[i] for i in keep]),
+        X=np.column_stack([np.prod(z[:, list(sources[i])], axis=1) for i in keep]),
         term_names=tuple(term_names[i] for i in keep),
         term_kinds=tuple(kinds[i] for i in keep),
         factors=factors,
     )
+
+
+def design_jacobian(
+    z: np.ndarray,
+    factors: Sequence[Factor],
+    *,
+    terms: Collection[TermKind] = ALL_TERMS,
+) -> np.ndarray:
+    """`dx/dz` at coded points `z` `(n, k)`: `(n, n_terms, k)`, in canonical term order.
+
+    The derivative of each design column with respect to each coded coordinate.
+    Unlike `build_design_matrix`, this takes points already in coded units,
+    because the gradient an optimizer over the coded box needs is with respect
+    to those units; `Factor.encode_derivative` converts to real units.
+
+    Term order and the `terms` filter come from the same `_term_layout` the
+    design matrix is built from, so a query row and its derivative cannot
+    disagree about which column is which — a mismatch that would otherwise
+    produce a confidently wrong gradient with no error.
+    """
+    unknown = set(terms) - set(ALL_TERMS)
+    if not terms or unknown:
+        raise ValueError(f"terms must be a non-empty subset of {ALL_TERMS}, got {tuple(terms)}")
+    z = np.atleast_2d(np.asarray(z, dtype=float))
+    p = len(tuple(factors))
+    if z.shape[1] != p:
+        raise ValueError(f"z has {z.shape[1]} columns but {p} factors were given")
+
+    _, kinds, sources = _term_layout([f.name for f in factors])
+    keep = [i for i, kind in enumerate(kinds) if kind in terms]
+
+    jacobian = np.zeros((len(z), len(keep), p))
+    for column, i in enumerate(keep):
+        source = sources[i]
+        # Product rule over the factors the term multiplies: a squared term
+        # appears twice in `source`, which is what makes its derivative 2 z_j.
+        for position, j in enumerate(source):
+            others = source[:position] + source[position + 1 :]
+            jacobian[:, column, j] += np.prod(z[:, list(others)], axis=1)
+    return jacobian
 
 
 def check_convergence(
@@ -430,3 +488,24 @@ def predict_mu(intercept: np.ndarray, beta: np.ndarray, X: np.ndarray) -> np.nda
     terms, or the columns will not line up with `beta`.
     """
     return np.exp(intercept[:, None] + beta @ X.T)
+
+
+def predict_mu_grad(mu: np.ndarray, beta: np.ndarray, jacobian: np.ndarray) -> np.ndarray:
+    """`d mu/dz` per draw at coded points: `(S, n, k)`.
+
+    `mu` is `(S, n)` from `predict_mu`, `beta` is `(S, n_terms)` and `jacobian`
+    is `(n, n_terms, k)` from `design_jacobian` at the same points and terms.
+    Under the log link `d mu/dz = mu * d(eta)/dz`, so the inverse link enters
+    only through `mu` — which is why the value is passed in rather than
+    recomputed, and why the two must come from the same points.
+    """
+    if mu.shape[0] != beta.shape[0]:
+        raise ValueError(f"mu has {mu.shape[0]} draws but beta has {beta.shape[0]}")
+    if mu.shape[1] != jacobian.shape[0] or beta.shape[1] != jacobian.shape[1]:
+        raise ValueError(
+            f"jacobian {jacobian.shape} does not match mu {mu.shape} and beta {beta.shape}"
+        )
+    # `tensordot` contracts the term axis through BLAS; the equivalent
+    # `einsum("st,ntd->snd", ...)` takes its unoptimized C path and is two
+    # orders of magnitude slower here, which an optimizer's inner loop feels.
+    return np.tensordot(beta, jacobian, axes=(1, 1)) * mu[:, :, None]

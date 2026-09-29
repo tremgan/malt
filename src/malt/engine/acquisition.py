@@ -22,16 +22,42 @@ points already run. With two runs A, B and a candidate C::
 Observed y never enters, so noise in the data cannot inflate the bar, and
 uncertainty about how good the current best really is carries through. This
 is "noisy expected improvement" (q-NEI).
+
+These follow BoTorch's formulations, reimplemented in numpy over this repo's own
+PyMC posterior draws rather than through torch: `greedy_q_nei` and
+`continuous_greedy_q_nei` are `qNoisyExpectedImprovement` under
+`optimize_acqf(..., sequential=True)`, and `greedy_q_ucb` is its `qUpperConfidenceBound`.
+
+    Balandat, Karrer, Jiang, Daulton, Letham, Wilson and Bakshy. "BoTorch: A
+    Framework for Efficient Monte-Carlo Bayesian Optimization." NeurIPS 2020.
+    Wilson, Hutter and Deisenroth. "Maximizing Acquisition Functions for
+    Bayesian Optimization." NeurIPS 2018 — Monte Carlo acquisition over fixed
+    draws (the sample-average approximation), and the submodular greedy
+    argument for batches.
+
+Not ported: BoTorch's `qLogNEI` smooths both the `max(0, .)` and the max over
+batch members so a joint batch can be optimized at once. Greedy selection
+optimizes one point at a time, so only the `max(0, .)` kink remains, and
+averaging over draws already leaves it differentiable enough for L-BFGS-B.
 """
 
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 
 import numpy as np
 
+from malt.engine.search import maximize
+
+# L-BFGS-B restarts per greedy pick, from the best candidates for that pick's
+# bar. The starts are already near-optimal, so a handful captures the gain;
+# each one costs a run of the optimizer.
+_N_STARTS = 4
+
 __all__ = [
     "central_composite",
+    "continuous_greedy_q_nei",
     "greedy_q_nei",
     "greedy_q_ucb",
     "q_expected_improvement",
@@ -58,6 +84,12 @@ def greedy_q_nei(candidate_draws: np.ndarray, incumbent: np.ndarray, q: int) -> 
 
     Returns column indices into `candidate_draws`, in pick order. See
     `_greedy_batch` for replacement and the fallback once nothing improves.
+
+    No campaign rule calls this any more: `continuous_greedy_q_nei` starts from
+    the same pick and then optimizes it. This stays public as that rule's
+    reference point — the floor its tests assert against and the arm
+    `benchmarks/polish_tradeoff.py` measures — and as the cheaper choice when
+    only draws at fixed candidates are available.
     """
     return _greedy_batch(candidate_draws, np.asarray(incumbent, dtype=float), q)
 
@@ -108,6 +140,121 @@ def _greedy_batch(values: np.ndarray, floor: np.ndarray, q: int) -> np.ndarray:
         available[j] = False
         bar = np.maximum(bar, values[:, j])
     return np.array(chosen)
+
+
+def continuous_greedy_q_nei(
+    mu: Callable[[np.ndarray], np.ndarray],
+    d_mu: Callable[[np.ndarray], np.ndarray],
+    candidates: np.ndarray,
+    incumbent: np.ndarray,
+    q: int,
+) -> np.ndarray:
+    """Choose `q` points anywhere in `[-1, +1]^k` by greedy q-NEI: `(q, k)` coded.
+
+    `greedy_q_nei` returns column indices, so its picks can only ever be
+    candidates someone enumerated, and its accuracy is bounded by the pool's
+    per-axis resolution — `len(candidates) ** (1 / k)`, which falls off a cliff
+    as factors are added: 4096 points give 64 levels over 2 factors but 2.8 over
+    8. This one starts from the same pool and then optimizes each pick with
+    L-BFGS-B on the model's derivative, so a pick lands where the acquisition is
+    actually highest rather than at the nearest candidate.
+
+    Each pick starts from exactly the candidate `greedy_q_nei` would have taken
+    at that step, and L-BFGS-B only moves off a start to improve on it. **For
+    `q == 1` that makes it provably never worse.** For a batch it does not
+    quite: a better first pick raises the bar, so later steps face a different
+    objective, and greedy maximization of a submodular objective carries only a
+    `1 - 1/e` guarantee — a better prefix can in principle end worse. Measured
+    across both regret benchmarks and both surfaces it never does, but treat
+    that as evidence rather than a theorem.
+
+    This is the algorithm BoTorch implements as `optimize_acqf(...,
+    sequential=True)` over `qNoisyExpectedImprovement`, in numpy over this
+    repo's own posterior draws (Balandat et al., "BoTorch: A Framework for
+    Efficient Monte-Carlo Bayesian Optimization", NeurIPS 2020). The greedy
+    structure and its `1 - 1/e` guarantee, and the fixed-draws argument below,
+    are from Wilson et al., "Maximizing Acquisition Functions for Bayesian
+    Optimization", NeurIPS 2018 — the same paper `greedy_q_ucb` follows. One
+    deliberate difference: BoTorch re-draws starting points for every pick,
+    while this reuses the one scan of `candidates`, because the draws at those
+    points do not change when the bar rises, only the score computed from them,
+    which is arithmetic on a cached matrix.
+
+    `mu(z)` maps coded points `(m, k)` to draws of mu `(S, m)`, and `d_mu(z)` to
+    `d mu/dz` `(S, m, k)`. Both must be **deterministic** functions of `z` over
+    the whole call: one fixed set of posterior draws throughout, never
+    resampled. That is the sample-average approximation — the optimizer is
+    descending a fixed surface, and with fresh draws per evaluation it would be
+    chasing a moving target and never converge. Draws are of mu, the latent
+    mean, never of observed `y`; see the module docstring for why the bar is
+    taken row by row from the same surface.
+
+    Once no point improves on the bar — always the case after the first pick
+    when `S == 1` — the rest are filled from the pool by highest mean mu, as in
+    `_greedy_batch`.
+    """
+    bar = np.asarray(incumbent, dtype=float).copy()
+    if bar.ndim != 1:
+        raise ValueError(f"incumbent must be one value per draw, got shape {bar.shape}")
+    candidates = np.atleast_2d(candidates)
+    n_candidates, k = candidates.shape
+    if not 1 <= q <= n_candidates:
+        raise ValueError(f"cannot choose {q} of {n_candidates} candidates")
+
+    # One evaluation of the pool, reused by every pick: mu at a candidate does
+    # not depend on the bar, so raising the bar is arithmetic on this matrix
+    # rather than a re-scan. This is what keeps the cost close to `greedy_q_nei`.
+    candidate_draws = mu(candidates)
+    mean_mu = candidate_draws.mean(axis=0)
+    available = np.ones(n_candidates, dtype=bool)
+
+    picks = []
+    for _ in range(q):
+        gain = np.maximum(candidate_draws - bar[:, None], 0.0).mean(axis=0)
+        gain[~available] = -np.inf
+        starts = np.argsort(gain)[::-1][:_N_STARTS]
+        starts = starts[gain[starts] > 0.0]
+        if len(starts) == 0:
+            # Nothing improves: fall back to the best unused candidate by mean mu.
+            j = int(np.argmax(np.where(available, mean_mu, -np.inf)))
+            available[j] = False
+            picks.append(candidates[j])
+            bar = np.maximum(bar, candidate_draws[:, j])
+            continue
+
+        available[starts[0]] = False
+        value, gradient = _improvement_over(mu, d_mu, bar)
+        z_best, _ = maximize(value, k, grad=gradient, starts=candidates[starts])
+        picks.append(z_best)
+        bar = np.maximum(bar, mu(z_best[None, :])[:, 0])
+    return np.array(picks)
+
+
+def _improvement_over(
+    mu: Callable[[np.ndarray], np.ndarray],
+    d_mu: Callable[[np.ndarray], np.ndarray],
+    bar: np.ndarray,
+) -> tuple[Callable[[np.ndarray], np.ndarray], Callable[[np.ndarray], np.ndarray]]:
+    """`mean_s max(0, mu_s(z) - bar_s)` and its gradient, as a factory over `bar`.
+
+    A factory so each pick closes over that pick's bar rather than over a
+    variable the greedy loop rebinds. The value is `q_expected_improvement` of a
+    one-point batch, evaluated per candidate column. The gradient is the mean of
+    `d mu_s/dz` over the draws that currently beat the bar: continuous and
+    piecewise smooth, with a draw crossing the bar moving it by order `1 / S`.
+    Sequential greedy optimizes one `z` at a time, so the non-differentiable max
+    over batch members never enters and no smoothing is needed — unlike a joint
+    formulation, which is why BoTorch's `qLogNEI` softens both.
+    """
+
+    def value(z: np.ndarray) -> np.ndarray:
+        return np.maximum(mu(z) - bar[:, None], 0.0).mean(axis=0)
+
+    def gradient(z: np.ndarray) -> np.ndarray:
+        improving = mu(z) > bar[:, None]
+        return (d_mu(z) * improving[:, :, None]).mean(axis=0)
+
+    return value, gradient
 
 
 def thompson_batch(candidate_draws: np.ndarray, q: int, rng: np.random.Generator) -> np.ndarray:

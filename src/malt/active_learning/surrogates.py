@@ -32,8 +32,10 @@ from malt.engine.glm import (
     TermKind,
     build_design_matrix,
     coefficient_draws,
+    design_jacobian,
     fit_gamma_glm,
     predict_mu,
+    predict_mu_grad,
 )
 
 __all__ = ["BayesianLinearRegression", "GammaGLMSurrogate"]
@@ -192,6 +194,57 @@ class GammaGLMSurrogate(SurrogateModel):
             raise _unconditioned(type(self).__name__)
         X = build_design_matrix(x, self.fit.factors, terms=self.terms).X
         return predict_mu(self.intercept_draws, self.beta_draws, X)
+
+    def thinned(self, n_draws: int) -> GammaGLMSurrogate:
+        """A copy holding every `S // n_draws`-th cached draw. See `SurrogateModel.thinned`.
+
+        Only the flattened caches are strided; `fit` and `observations` are kept
+        whole, so the thinned copy is still a complete record and `condition`
+        would refit on everything. Draws are concatenated chain-major, so a
+        stride takes evenly from every chain.
+        """
+        if self.intercept_draws is None or self.beta_draws is None or n_draws < 1:
+            return self
+        step = max(1, len(self.intercept_draws) // n_draws)
+        if step == 1:
+            return self
+        return replace(
+            self,
+            intercept_draws=self.intercept_draws[::step],
+            beta_draws=self.beta_draws[::step],
+        )
+
+    def sample_jacobian(self, x: pd.DataFrame) -> np.ndarray:
+        """`d mu/d(real units)` per draw, in closed form: `(S, len(x), k)`.
+
+        Under the log link `d mu/dz = mu * X'(z) beta`, which costs one
+        contraction over the draws already cached by `condition` — no extra
+        `sample` calls, unlike the finite-difference default. The design
+        Jacobian is taken in coded units, where the model is actually
+        parameterized, and converted by `Factor.encode_derivative`; the coding
+        therefore stays in `Factor` rather than being re-derived here.
+        """
+        if self.fit is None or self.intercept_draws is None or self.beta_draws is None:
+            raise _unconditioned(type(self).__name__)
+
+        factors = self.fit.factors
+        names = [f.name for f in factors]
+        unknown = [c for c in x.columns if c not in names]
+        if unknown or len(x.columns) != len(names):
+            raise ValueError(f"expected one column per factor {names}, got {list(x.columns)}")
+
+        real = x.loc[:, names].to_numpy(dtype=float)
+        z = np.column_stack([f.encode(real[:, j]) for j, f in enumerate(factors)])
+        mu = predict_mu(
+            self.intercept_draws, self.beta_draws, build_design_matrix(x, factors, terms=self.terms).X
+        )
+        d_mu_d_z = predict_mu_grad(
+            mu, self.beta_draws, design_jacobian(z, factors, terms=self.terms)
+        )
+        d_z_d_x = np.column_stack([f.encode_derivative(real[:, j]) for j, f in enumerate(factors)])
+        d_mu_d_x = d_mu_d_z * d_z_d_x[None, :, :]
+        # The last axis is in `factors` order; the contract is `x`'s order.
+        return d_mu_d_x[:, :, [names.index(c) for c in x.columns]]
 
     @property
     def data(self) -> pd.DataFrame | None:

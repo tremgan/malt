@@ -22,7 +22,7 @@ from malt.active_learning.campaign import run_campaign
 from malt.active_learning.termination import MaxRoundsRule
 from malt.simulation.oracle import GaussianLikelihood, Oracle, quadratic_latent
 from malt.active_learning.surrogates import BayesianLinearRegression
-from malt.engine.acquisition import central_composite
+from malt.engine.acquisition import central_composite, greedy_q_nei, q_expected_improvement
 from malt.engine.factors import Factor, decode_design
 from malt.engine.search import space_filling
 
@@ -102,10 +102,16 @@ def test_batches_are_distinct_points(rule, model):
 
 @pytest.mark.parametrize("rule", [QNoisyExpectedImprovement(FACTORS), RandomBatch(FACTORS)], ids=["qnei", "random"])
 def test_each_round_searches_afresh(rule, model):
-    # No fixed lattice: a different stream gives different points, not the same grid rows.
+    # No fixed lattice: a different stream gives different points, not the same
+    # grid rows. Compared on interior points only — a continuous optimum can sit
+    # on a face of the box, and `Factor.decode` clips to the range, so two
+    # streams pushing to the same face legitimately agree to the last bit. A
+    # lattice would repeat interior points too, which is the failure this guards.
     a = rule.propose(model, BATCH, np.random.default_rng(1))
     b = rule.propose(model, BATCH, np.random.default_rng(2))
-    assert not np.isin(a.to_numpy(), b.to_numpy()).all(axis=1).any()
+    interior = a[(np.abs(coded(a)) < 1.0 - 1e-9).all(axis=1)]
+    assert not interior.empty
+    assert not np.isin(interior.to_numpy(), b.to_numpy()).all(axis=1).any()
 
 
 def test_random_batch_is_uniform_on_every_axis_in_coded_units(model):
@@ -176,3 +182,97 @@ def test_campaign_finds_the_peak_the_seed_misses(rule, model):
         termination_rule=MaxRoundsRule(3),
     )
     assert recommendation_error(journal.rounds[-1].surrogate_model) <= 0.25
+
+
+# q-NEI picks are optimized off the candidate pool, not taken from it
+
+
+def q_nei_of(model, batch: pd.DataFrame) -> float:
+    """The batch's q-NEI under `model`, on all its draws — the number the rule maximizes."""
+    incumbent = model.sample(model.data.loc[:, [f.name for f in FACTORS]]).max(axis=1)
+    return q_expected_improvement(model.sample(batch), incumbent)
+
+
+def discrete_batch(model, n: int, rng: np.random.Generator) -> pd.DataFrame:
+    """What the rule would return if picks were confined to the candidate pool.
+
+    The rule it must never lose to, reconstructed here rather than kept in the
+    library: `continuous_greedy_q_nei` starts from exactly this batch's picks, so
+    this is the floor it is measured against.
+    """
+    candidates = decode_design(FACTORS, space_filling(len(FACTORS), 4096, rng))
+    incumbent = model.sample(model.data.loc[:, list(candidates.columns)]).max(axis=1)
+    return candidates.iloc[greedy_q_nei(model.sample(candidates), incumbent, n)].reset_index(drop=True)
+
+
+def fitted(seed: int = 0):
+    return BayesianLinearRegression(FACTORS, features="quadratic").condition(
+        seed_data(np.random.default_rng(seed)), np.random.default_rng(seed + 1)
+    )
+
+
+def test_q_nei_is_not_worse_than_picking_from_its_own_pool():
+    """Why this needs no switch: each pick starts from the pool-only rule's own choice.
+
+    Provable only for a batch of one — a better first pick raises the bar, so
+    later greedy steps face a different objective. This asserts it for a real
+    batch, which is evidence, not a theorem.
+    """
+    model = fitted(0)
+    polished = QNoisyExpectedImprovement(FACTORS).propose(model, BATCH, np.random.default_rng(2))
+    discrete = discrete_batch(model, BATCH, np.random.default_rng(2))
+    assert q_nei_of(model, polished) >= q_nei_of(model, discrete)
+
+
+def test_q_nei_picks_are_not_confined_to_the_candidate_pool():
+    """Otherwise the polish is silently doing nothing."""
+    rng = np.random.default_rng(2)
+    model = fitted(4)
+    pool = space_filling(len(FACTORS), 4096, np.random.default_rng(2))
+    picks = coded(QNoisyExpectedImprovement(FACTORS).propose(model, BATCH, rng))
+    # At least one pick is strictly off every candidate, i.e. was moved by L-BFGS-B.
+    nearest = np.abs(picks[:, None, :] - pool[None, :, :]).max(axis=2).min(axis=1)
+    assert nearest.max() > 1e-6
+
+
+def test_q_nei_lands_close_to_a_known_optimum():
+    """The toy check: an in-family surface whose peak the seed alone misplaces."""
+    model = fitted(6)
+    target = coded(pd.DataFrame({k: [v] for k, v in OPTIMUM.items()}))[0]
+    batch = QNoisyExpectedImprovement(FACTORS).propose(model, BATCH, np.random.default_rng(5))
+    assert np.linalg.norm(coded(batch) - target, axis=1).min() < 0.5
+
+
+def test_q_nei_stays_inside_the_declared_ranges():
+    model = fitted(8)
+    batch = QNoisyExpectedImprovement(FACTORS).propose(model, BATCH, np.random.default_rng(8))
+    assert len(batch) == BATCH
+    assert list(batch.columns) == [f.name for f in FACTORS]
+    for f in FACTORS:
+        assert f.contains(batch[f.name].to_numpy()).all()
+    assert np.abs(coded(batch)).max() <= 1.0 + 1e-12
+
+
+def test_q_nei_does_not_stack_the_batch_on_one_point():
+    model = fitted(10)
+    z = coded(QNoisyExpectedImprovement(FACTORS).propose(model, BATCH, np.random.default_rng(11)))
+    distances = [np.linalg.norm(z[i] - z[j]) for i, j in itertools.combinations(range(len(z)), 2)]
+    assert min(distances) > 1e-3
+
+
+def test_q_nei_is_reproducible_from_its_rng():
+    model = fitted(14)
+    rule = QNoisyExpectedImprovement(FACTORS)
+    first = rule.propose(model, BATCH, np.random.default_rng(16))
+    pd.testing.assert_frame_equal(first, rule.propose(model, BATCH, np.random.default_rng(16)))
+
+
+def test_thinning_is_a_stride_over_frozen_draws_not_a_resample():
+    """Row `s` must be the same surface thinned or not, or joint draws break."""
+    model = BayesianLinearRegression(FACTORS, features="quadratic", n_draws=2000).condition(
+        seed_data(np.random.default_rng(12)), np.random.default_rng(13)
+    )
+    x = seed_data(np.random.default_rng(12)).loc[:, [f.name for f in FACTORS]]
+    # The baseline cannot thin, so it must return itself rather than resampling.
+    assert model.thinned(500) is model
+    np.testing.assert_array_equal(model.thinned(500).sample(x), model.sample(x))

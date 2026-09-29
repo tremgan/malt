@@ -161,9 +161,44 @@ def run_replicate(bench: Benchmark, surface: str, replicate: int) -> list[pd.Dat
     return curves
 
 
-# Categorical slots 1-3 of the dataviz reference palette, validated on this surface.
-PALETTE = ["#2a78d6", "#eb6834", "#1baf7a"]
-SURFACE_BG, INK, INK_MUTED, GRID = "#fcfcfb", "#1f1f1e", "#6b6a66", "#e4e3df"
+@dataclass(frozen=True)
+class Theme:
+    """Chart tokens for one colour scheme. `arms` is keyed by arm name, not
+    position, so adding an arm never repaints the others.
+
+    Dark is a selected palette, not an inverted one: the arm colours are the
+    same three hues re-stepped for a dark surface, and both sets were checked
+    against their own surface (worst all-pairs colour-blind separation dE 9.2
+    light / 9.4 dark; normal-vision 24.0 / 20.9). Aqua sits at 2.74:1 on the
+    light surface, below the 3:1 floor, which is why every line also carries a
+    direct label — identity never rests on colour alone here.
+    """
+
+    surface: str
+    ink: str
+    ink_muted: str
+    grid: str
+    arms: dict[str, str]
+    suffix: str
+
+
+LIGHT = Theme(
+    surface="#fcfcfb", ink="#1f1f1e", ink_muted="#6b6a66", grid="#e4e3df",
+    arms={
+        "q-NEI, Gamma GLM": "#2a78d6", "RSM, BLR + CCD": "#eb6834", "Random, Gamma GLM": "#1baf7a",
+        # The ablation's cells (benchmarks/two_factor/ablation.py); slot 4 added.
+        "q-NEI, BLR": "#eb6834", "CCD, Gamma GLM": "#1baf7a", "CCD, BLR": "#eda100",
+    },
+    suffix="",
+)
+DARK = Theme(
+    surface="#1a1a19", ink="#ffffff", ink_muted="#898781", grid="#2c2c2a",
+    arms={
+        "q-NEI, Gamma GLM": "#3987e5", "RSM, BLR + CCD": "#d95926", "Random, Gamma GLM": "#199e70",
+        "q-NEI, BLR": "#d95926", "CCD, Gamma GLM": "#199e70", "CCD, BLR": "#c98500",
+    },
+    suffix="_dark",
+)
 TITLES = {"quadratic": "One sharp peak above an inoculum floor", "gp": "GP-sampled surface: no quadratic fits"}
 
 
@@ -178,8 +213,11 @@ def spread(ys: list[float], gap: float) -> list[float]:
     return list(out)
 
 
-def plot(bench: Benchmark, results: pd.DataFrame, out: Path) -> None:
-    colors = dict(zip([a.name for a in bench.arms], PALETTE))
+def plot(bench: Benchmark, results: pd.DataFrame, out: Path, theme: Theme = LIGHT) -> None:
+    colors = {a.name: theme.arms[a.name] for a in bench.arms}
+    # Direct labels are the part before the comma, unless two arms share it.
+    heads = [name.split(",")[0] for name in colors]
+    labels = {name: head if heads.count(head) == 1 else name for name, head in zip(colors, heads)}
     summary = (
         results.groupby(["surface", "arm", "round"])["cumulative_regret"]
         .agg(["mean", "sem", "count"])
@@ -190,36 +228,37 @@ def plot(bench: Benchmark, results: pd.DataFrame, out: Path) -> None:
     half = np.nan_to_num(half)  # a single replicate has no interval; draw the mean alone
     summary["lo"], summary["hi"] = summary["mean"] - half, summary["mean"] + half
     top = np.nanmax(summary["hi"].to_numpy()) * 1.08
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), sharey=True, facecolor=SURFACE_BG)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), sharey=True, facecolor=theme.surface)
     for ax, surface in zip(axes, bench.surfaces):
-        ax.set_facecolor(SURFACE_BG)
+        ax.set_facecolor(theme.surface)
         ends = {}
         for arm, color in colors.items():
             s = summary.loc[(summary["surface"] == surface) & (summary["arm"] == arm)]
             ax.fill_between(s["round"], s["lo"], s["hi"], color=color, alpha=0.14, linewidth=0)
             ax.plot(s["round"], s["mean"], color=color, linewidth=2, marker="o", markersize=5,
-                    markeredgecolor=SURFACE_BG, markeredgewidth=1.5, label=arm)
+                    markeredgecolor=theme.surface, markeredgewidth=1.5, label=arm)
             ends[arm] = (s["round"].to_numpy()[-1], s["mean"].to_numpy()[-1])
         label_ys = spread([y for _, y in ends.values()], gap=0.07 * top)
         for (arm, (x, _)), y in zip(ends.items(), label_ys):
-            ax.annotate(arm.split(",")[0], (x, y), xytext=(8, 0), textcoords="offset points",
-                        va="center", fontsize=9, color=INK)
+            ax.annotate(labels[arm], (x, y), xytext=(8, 0), textcoords="offset points",
+                        va="center", fontsize=9, color=theme.ink)
         n = results.loc[results["surface"] == surface, "replicate"].nunique()
-        ax.set_title(f"{TITLES[surface]}  (n = {n})", loc="left", fontsize=11, color=INK)
-        ax.set_xlabel(f"Round (0 = seed; {bench.batch} runs per round)", color=INK_MUTED)
+        ax.set_title(f"{TITLES[surface]}  (n = {n})", loc="left", fontsize=11, color=theme.ink)
+        ax.set_xlabel(f"Round (0 = seed; {bench.batch} runs per round)", color=theme.ink_muted)
         ax.set_xticks(sorted(results["round"].unique()))
-        ax.grid(axis="y", color=GRID, linewidth=0.8)
+        ax.grid(axis="y", color=theme.grid, linewidth=0.8)
         ax.set_axisbelow(True)
-        ax.tick_params(colors=INK_MUTED, labelsize=9)
+        ax.tick_params(colors=theme.ink_muted, labelsize=9)
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
-        ax.spines["bottom"].set_color(GRID)
-        ax.set_xlim(right=ax.get_xlim()[1] + 0.6)  # room for the direct labels
+        ax.spines["bottom"].set_color(theme.grid)
+        # Room for the direct labels, wider when some carry a full arm name.
+        ax.set_xlim(right=ax.get_xlim()[1] + 0.6 + 0.06 * max(map(len, labels.values())))
     axes[0].set_ylim(min(0.0, np.nanmin(summary["lo"].to_numpy())), top)
-    axes[0].set_ylabel("Cumulative regret\n(optimal runs' worth of biomass lost)", color=INK_MUTED)
+    axes[0].set_ylabel("Cumulative regret\n(optimal runs' worth of biomass lost)", color=theme.ink_muted)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=len(labels), frameon=False,
-               fontsize=9, labelcolor=INK)
+               fontsize=9, labelcolor=theme.ink)
     n_reps = results["replicate"].nunique()
     # Campaigns stopped by a failed fit have no regret for the rounds they never ran,
     # so later means cover fewer campaigns; say so rather than let it pass unseen.
@@ -240,10 +279,10 @@ def plot(bench: Benchmark, results: pd.DataFrame, out: Path) -> None:
         f"the shared seed counts 0. Lines: mean over {n_reps} paired campaigns.\nShaded bands: 90% confidence "
         f"interval for that mean (t-interval, mean ± t × standard error), not the spread of individual campaigns.\n"
         f"{stop_note}",
-        fontsize=8.5, color=INK_MUTED, ha="left", va="bottom",
+        fontsize=8.5, color=theme.ink_muted, ha="left", va="bottom",
     )
     fig.tight_layout(rect=(0, 0.11, 1, 0.93))
-    fig.savefig(out, dpi=160, facecolor=SURFACE_BG)
+    fig.savefig(out, dpi=160, facecolor=theme.surface)
 
 
 def _quiet() -> None:
@@ -272,7 +311,9 @@ def main(bench: Benchmark, description: str | None = None) -> None:
     results = pd.concat([c for part in parts for c in part], ignore_index=True)
     bench.results.mkdir(parents=True, exist_ok=True)
     results.to_csv(bench.results / "regret.csv", index=False)
-    plot(bench, results, bench.results / "regret.svg")
+    # Both schemes every time, so the committed figures cannot fall out of step.
+    for theme in (LIGHT, DARK):
+        plot(bench, results, bench.results / f"regret{theme.suffix}.svg", theme)
 
     final = results[results["round"] == bench.rounds]
     print("\nMedian cumulative regret after the last round, and campaigns stopped by a failed fit:")

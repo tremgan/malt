@@ -32,6 +32,7 @@ os.environ.setdefault("PYTENSOR_FLAGS", "cxx=")
 
 import argparse  # noqa: E402
 import warnings  # noqa: E402
+from dataclasses import dataclass
 from pathlib import Path  # noqa: E402
 
 import matplotlib  # noqa: E402
@@ -103,7 +104,30 @@ ORANGES = LinearSegmentedColormap.from_list(
 GREYS = LinearSegmentedColormap.from_list(
     "greys", ["#f4f4f2", "#d9d9d6", "#b3b3af", "#8a8a86", "#62625f", "#3d3d3b", "#1f1f1e", "#0b0b0b"]
 )
-SURFACE_BG, INK, INK_MUTED = "#fcfcfb", "#1f1f1e", "#6b6a66"
+# Ink for marks drawn on top of the heatmaps: contours, run dots, proposal
+# rings. These sit on a panel's own light-to-dark ramp in either scheme, not on
+# the figure surface, so they stay dark. Flipping them white for dark mode would
+# hide them at the pale end of every ramp, which is most of each panel.
+MARK = "#1f1f1e"
+
+
+@dataclass(frozen=True)
+class Theme:
+    """Chrome tokens for one colour scheme; see `benchmarks.harness.Theme`.
+
+    Only the chrome flips here. The three sequential ramps are unchanged
+    between schemes, because a ramp's job is magnitude and re-stepping all
+    three for a dark surface would be a redesign, not a theme.
+    """
+
+    surface: str
+    ink: str
+    ink_muted: str
+    suffix: str
+
+
+LIGHT = Theme("#fcfcfb", "#1f1f1e", "#6b6a66", "")
+DARK = Theme("#1a1a19", "#ffffff", "#898781", "_dark")
 
 
 def maps(model: SurrogateModel, log_sd: bool) -> tuple[np.ndarray, np.ndarray]:
@@ -141,69 +165,73 @@ def plot(journal: LabJournal, oracle: Oracle, arm: str, surface: str, out: Path)
     mean_levels = MaxNLocator(6).tick_values(0.0, mean_norm.vmax or 1.0)[1:-1]
     sd_levels = log_levels(sd_lo, sd_hi)
 
-    g = np.unique(PIXELS["glucose"].to_numpy())
-    n = np.unique(PIXELS["nitrogen"].to_numpy())
-    rows = len(models)
-    fig, axes = plt.subplots(rows, 3, figsize=(12.6, 2.9 * rows + 1.2), sharex=True, sharey=True,
-                             facecolor=SURFACE_BG, squeeze=False)
-    for r, ((mean, sd), ax_row) in enumerate(zip(fields, axes)):
-        observed = pd.concat(seen[: r + 1])
-        proposed = seen[r + 1] if r + 1 < len(seen) else None
-        for ax, field, cmap, norm, levels in (
-            (ax_row[0], true_field, GREYS, mean_norm, mean_levels),
-            (ax_row[1], mean, BLUES, mean_norm, mean_levels),
-            (ax_row[2], sd, ORANGES, sd_norm, sd_levels),
-        ):
-            ax.pcolormesh(g, n, field, cmap=cmap, norm=norm, shading="nearest", rasterized=True)
-            lines = ax.contour(g, n, field, levels=levels, colors=INK, linewidths=0.7, alpha=0.55)
-            labels = ax.clabel(lines, fontsize=7, fmt="%g", inline_spacing=2)
-            if cmap is GREYS:  # dark lines vanish on the black peak: outline them in white
-                halo = [patheffects.withStroke(linewidth=1.4, foreground="white")]
-                lines.set_path_effects(halo)
-                for label in labels:
-                    label.set_path_effects(halo)
-            if cmap is BLUES and field.min() < 0:
-                ax.contour(g, n, field, levels=[0.0], colors=INK, linewidths=1.0, linestyles="--")
-            ax.scatter(observed["glucose"], observed["nitrogen"], s=14, color=INK, edgecolors="white",
-                       linewidths=0.6, zorder=3, clip_on=False)
-            if proposed is not None:
-                ax.scatter(proposed["glucose"], proposed["nitrogen"], s=70, facecolors="none",
-                           edgecolors="white", linewidths=2.6, zorder=4, clip_on=False)
-                ax.scatter(proposed["glucose"], proposed["nitrogen"], s=70, facecolors="none",
-                           edgecolors=INK, linewidths=1.3, zorder=5, clip_on=False)
-            ax.scatter([best["glucose"]], [best["nitrogen"]], marker="*", s=160, color="white",
-                       edgecolors=INK, linewidths=1.0, zorder=6, clip_on=False)
-            ax.set_yscale("log")
-            ax.tick_params(colors=INK_MUTED, labelsize=8)
-            for spine in ax.spines.values():
-                spine.set_visible(False)
-        ax_row[0].set_ylabel(f"Round {r}\n{len(observed)} runs\n\nnitrogen (g/L)", color=INK, fontsize=9)
-    for ax in axes[-1]:
-        ax.set_xlabel("glucose (g/L)", color=INK_MUTED, fontsize=9)
-    axes[0][0].set_title("True mean biomass (g/L)", loc="left", fontsize=10, color=INK)
-    axes[0][1].set_title("Posterior mean biomass (g/L)", loc="left", fontsize=10, color=INK)
-    axes[0][2].set_title("Posterior sd of log biomass (≈ CV)" if log_sd else "Posterior sd of biomass (g/L)",
-                         loc="left", fontsize=10, color=INK)
+    # Both schemes every time, so the committed figures cannot fall out of step.
+    for theme in (LIGHT, DARK):
+        g = np.unique(PIXELS["glucose"].to_numpy())
+        n = np.unique(PIXELS["nitrogen"].to_numpy())
+        rows = len(models)
+        fig, axes = plt.subplots(rows, 3, figsize=(12.6, 2.9 * rows + 1.2), sharex=True, sharey=True,
+                                 facecolor=theme.surface, squeeze=False)
+        for r, ((mean, sd), ax_row) in enumerate(zip(fields, axes)):
+            observed = pd.concat(seen[: r + 1])
+            proposed = seen[r + 1] if r + 1 < len(seen) else None
+            for ax, field, cmap, norm, levels in (
+                (ax_row[0], true_field, GREYS, mean_norm, mean_levels),
+                (ax_row[1], mean, BLUES, mean_norm, mean_levels),
+                (ax_row[2], sd, ORANGES, sd_norm, sd_levels),
+            ):
+                ax.pcolormesh(g, n, field, cmap=cmap, norm=norm, shading="nearest", rasterized=True)
+                lines = ax.contour(g, n, field, levels=levels, colors=MARK, linewidths=0.7, alpha=0.55)
+                labels = ax.clabel(lines, fontsize=7, fmt="%g", inline_spacing=2)
+                if cmap is GREYS:  # dark lines vanish on the black peak: outline them in white
+                    halo = [patheffects.withStroke(linewidth=1.4, foreground="white")]
+                    lines.set_path_effects(halo)
+                    for label in labels:
+                        label.set_path_effects(halo)
+                if cmap is BLUES and field.min() < 0:
+                    ax.contour(g, n, field, levels=[0.0], colors=MARK, linewidths=1.0, linestyles="--")
+                ax.scatter(observed["glucose"], observed["nitrogen"], s=14, color=MARK, edgecolors="white",
+                           linewidths=0.6, zorder=3, clip_on=False)
+                if proposed is not None:
+                    ax.scatter(proposed["glucose"], proposed["nitrogen"], s=70, facecolors="none",
+                               edgecolors="white", linewidths=2.6, zorder=4, clip_on=False)
+                    ax.scatter(proposed["glucose"], proposed["nitrogen"], s=70, facecolors="none",
+                               edgecolors=MARK, linewidths=1.3, zorder=5, clip_on=False)
+                ax.scatter([best["glucose"]], [best["nitrogen"]], marker="*", s=160, color="white",
+                           edgecolors=MARK, linewidths=1.0, zorder=6, clip_on=False)
+                ax.set_yscale("log")
+                ax.tick_params(colors=theme.ink_muted, labelsize=8)
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+            ax_row[0].set_ylabel(f"Round {r}\n{len(observed)} runs\n\nnitrogen (g/L)", color=theme.ink, fontsize=9)
+        for ax in axes[-1]:
+            ax.set_xlabel("glucose (g/L)", color=theme.ink_muted, fontsize=9)
+        axes[0][0].set_title("True mean biomass (g/L)", loc="left", fontsize=10, color=theme.ink)
+        axes[0][1].set_title("Posterior mean biomass (g/L)", loc="left", fontsize=10, color=theme.ink)
+        axes[0][2].set_title("Posterior sd of log biomass (≈ CV)" if log_sd else "Posterior sd of biomass (g/L)",
+                             loc="left", fontsize=10, color=theme.ink)
 
-    fig.tight_layout(rect=(0, 0.06, 1, 0.95))
-    for col, norm, cmap, extend in ((0, mean_norm, GREYS, "max"), (1, mean_norm, BLUES, "max"),
-                                    (2, sd_norm, ORANGES, "both")):
-        box = axes[-1][col].get_position()
-        cax = fig.add_axes((box.x0, 0.025, box.width, 0.012))
-        bar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal",
-                           extend=extend)
-        bar.outline.set_visible(False)
-        if isinstance(norm, LogNorm):
-            ticks = log_levels(sd_lo, sd_hi)
-            bar.set_ticks(ticks, labels=[f"{t:g}" for t in ticks])
-            bar.ax.minorticks_off()
-        bar.ax.tick_params(colors=INK_MUTED, labelsize=8)
-    fig.suptitle(
-        f"{title} on the {TITLES[surface]} surface: dots observed, rings proposed next, "
-        "star true optimum",
-        fontsize=10, color=INK, x=0.02, ha="left",
-    )
-    fig.savefig(out, dpi=160, facecolor=SURFACE_BG)
+        fig.tight_layout(rect=(0, 0.06, 1, 0.95))
+        for col, norm, cmap, extend in ((0, mean_norm, GREYS, "max"), (1, mean_norm, BLUES, "max"),
+                                        (2, sd_norm, ORANGES, "both")):
+            box = axes[-1][col].get_position()
+            cax = fig.add_axes((box.x0, 0.025, box.width, 0.012))
+            bar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal",
+                               extend=extend)
+            bar.outline.set_visible(False)
+            if isinstance(norm, LogNorm):
+                ticks = log_levels(sd_lo, sd_hi)
+                bar.set_ticks(ticks, labels=[f"{t:g}" for t in ticks])
+                bar.ax.minorticks_off()
+            bar.ax.tick_params(colors=theme.ink_muted, labelsize=8)
+        fig.suptitle(
+            f"{title} on the {TITLES[surface]} surface: dots observed, rings proposed next, "
+            "star true optimum",
+            fontsize=10, color=theme.ink, x=0.02, ha="left",
+        )
+        target = out.with_name(f"{out.stem}{theme.suffix}{out.suffix}")
+        fig.savefig(target, dpi=160, facecolor=theme.surface)
+        plt.close(fig)
 
 
 def main() -> None:

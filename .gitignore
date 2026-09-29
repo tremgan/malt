@@ -6,3 +6,4 @@ __pycache__/
 .claude/settings.local.json
 reports/
 benchmarks/*/results/runs/
+benchmarks/*/ablation_results/runs/

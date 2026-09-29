@@ -52,3 +52,37 @@ def test_maximize_is_deterministic_without_an_rng():
     f = bowl(np.array([0.2, 0.4]))
     assert maximize(f, 2)[1] == maximize(f, 2)[1]
     np.testing.assert_array_equal(maximize(f, 2, np.random.default_rng(3))[0], maximize(f, 2, np.random.default_rng(3))[0])
+
+
+# Gradients
+
+
+def test_maximize_with_a_gradient_agrees_with_finite_differences():
+    peak = np.array([0.3137, -0.7071, 0.1234])
+    f = bowl(peak)
+    grad = lambda z: -2.0 * (z - peak)
+    x_fd, v_fd = maximize(f, 3)
+    x_an, v_an = maximize(f, 3, grad=grad)
+    np.testing.assert_allclose(x_an, x_fd, atol=1e-5)
+    assert v_an == pytest.approx(v_fd, abs=1e-8)
+    np.testing.assert_allclose(x_an, peak, atol=1e-6)
+
+
+def test_a_gradient_cuts_the_objective_calls_per_polish_step():
+    """The point of `grad`: scipy stops spending `k + 1` calls to estimate one."""
+    peak = np.array([0.31, -0.7, 0.12, 0.45, -0.22])
+    calls = {"f": 0, "grad": 0}
+
+    def f(z):
+        calls["f"] += 1
+        return bowl(peak)(z)
+
+    def grad(z):
+        calls["grad"] += 1
+        return -2.0 * (z - peak)
+
+    maximize(f, 5, grad=grad)
+    with_grad = calls["f"]
+    calls["f"] = 0
+    maximize(f, 5)
+    assert with_grad < calls["f"]

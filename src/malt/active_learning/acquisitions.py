@@ -30,7 +30,7 @@ import pandas as pd
 from malt.active_learning.actors import Acquisition, SurrogateModel
 from malt.engine.acquisition import (
     central_composite,
-    greedy_q_nei,
+    continuous_greedy_q_nei,
     greedy_q_ucb,
     thompson_batch,
 )
@@ -46,6 +46,11 @@ __all__ = [
     "ThompsonSampling",
     "posterior_mean_optimum",
 ]
+
+# Draws kept while an optimizer searches. A few hundred locate an acquisition's
+# optimum (BoTorch defaults to 128-512 base samples for the same reason); the
+# full posterior stays available for anything reported.
+_SEARCH_DRAWS = 512
 
 
 def posterior_mean_optimum(model: SurrogateModel, factors: tuple[Factor, ...]) -> pd.DataFrame:
@@ -66,10 +71,22 @@ def _candidates(factors: tuple[Factor, ...], n: int, rng: np.random.Generator) -
 class QNoisyExpectedImprovement(Acquisition):
     """Greedy batch expected improvement, maximizing mu, over fresh candidates each round.
 
-    The bar each surface must beat is its own highest mu at the points the
-    model has been conditioned on — not best observed y, which noise inflates.
-    See `engine.acquisition` for a worked example. `n_candidates` (a power of
-    2) Sobol points are drawn from `rng` every round.
+    The bar each surface must beat is its own highest mu at the points the model
+    has been conditioned on — not best observed y, which noise inflates.
+    Observed `y` never enters: the draws are of mu, the latent mean. See
+    `engine.acquisition` for a worked example. `n_candidates` (a power of 2)
+    Sobol points are drawn from `rng` every round.
+
+    Those candidates are starting points, not the answer: each pick is then
+    optimized continuously with L-BFGS-B on the model's derivative, so it lands
+    where the acquisition is highest rather than at the nearest candidate. That
+    matters more the more factors there are, because a pool of `n` points spans
+    only `n ** (1 / k)` levels per factor — 64 over 2 factors, 2.8 over 8 — and
+    enumerating more does not rescue it, since resolution improves as the `k`th
+    root of the count. Each pick begins at the candidate a pool-only rule would
+    have taken, so there is nothing to trade off and no switch to set — see
+    `engine.acquisition.continuous_greedy_q_nei` for how far that argument
+    actually goes for a batch.
     """
 
     factors: tuple[Factor, ...]
@@ -80,11 +97,30 @@ class QNoisyExpectedImprovement(Acquisition):
     ) -> pd.DataFrame:
         if model.data is None:
             raise ValueError("q-NEI needs observed points to improve on; condition on the seed first")
-        candidates = _candidates(self.factors, self.n_candidates, rng)
+        names = [f.name for f in self.factors]
+        # Thinned for the optimizer's inner loop only: it evaluates single points
+        # hundreds of times and every draw is multiplied through on each one.
+        search_model = model.thinned(_SEARCH_DRAWS)
         # Two `sample` calls are one set of surfaces: row s is the same surface in both.
-        incumbent = model.sample(model.data.loc[:, list(candidates.columns)]).max(axis=1)
-        chosen = greedy_q_nei(model.sample(candidates), incumbent, n)
-        return candidates.iloc[chosen].reset_index(drop=True)
+        incumbent = search_model.sample(model.data.loc[:, names]).max(axis=1)
+
+        candidates = space_filling(len(self.factors), self.n_candidates, rng)
+
+        def mu(z: np.ndarray) -> np.ndarray:
+            return search_model.sample(decode_design(self.factors, z))
+
+        def d_mu(z: np.ndarray) -> np.ndarray:
+            x = decode_design(self.factors, z)
+            real = x.to_numpy(dtype=float)
+            # `sample_jacobian` is in real units and the coded box is what we
+            # search, so d mu/dz = (d mu/dx) / (dz/dx).
+            d_z_d_x = np.column_stack(
+                [f.encode_derivative(real[:, j]) for j, f in enumerate(self.factors)]
+            )
+            return search_model.sample_jacobian(x) / d_z_d_x[None, :, :]
+
+        picks = continuous_greedy_q_nei(mu, d_mu, candidates, incumbent, n)
+        return decode_design(self.factors, picks)
 
 
 @dataclass(frozen=True, slots=True, eq=False)

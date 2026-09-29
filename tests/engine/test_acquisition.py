@@ -10,12 +10,16 @@ import pytest
 
 from malt.engine.acquisition import (
     central_composite,
+    continuous_greedy_q_nei,
     greedy_q_nei,
     greedy_q_ucb,
     q_expected_improvement,
     thompson_batch,
 )
 from malt.engine.factors import Factor, candidate_grid
+from malt.engine.search import space_filling
+
+from benchmarks.polish_tradeoff import compare
 
 
 def marginal_ei(draws: np.ndarray, incumbent: np.ndarray) -> np.ndarray:
@@ -166,3 +170,175 @@ def test_candidate_grid_is_full_factorial_and_geometric_on_log_scale():
 def test_candidate_grid_needs_two_levels():
     with pytest.raises(ValueError, match="at least 2 levels"):
         candidate_grid((Factor("a", 0.0, 1.0),), 1)
+
+
+# Continuous q-NEI: the same greedy rule, but picks are not confined to a pool
+
+
+def bumps(peaks: np.ndarray, heights: np.ndarray):
+    """`S` Gaussian surfaces with closed-form derivatives: `mu_s(z) = h_s exp(-||z - p_s||^2)`.
+
+    A stand-in for a posterior over surfaces, so the acquisition can be tested
+    against exact values and exact gradients without fitting anything.
+    """
+
+    def mu(z: np.ndarray) -> np.ndarray:
+        offset = np.atleast_2d(z)[None, :, :] - peaks[:, None, :]
+        return heights[:, None] * np.exp(-(offset**2).sum(axis=2))
+
+    def d_mu(z: np.ndarray) -> np.ndarray:
+        offset = np.atleast_2d(z)[None, :, :] - peaks[:, None, :]
+        return mu(z)[:, :, None] * (-2.0 * offset)
+
+    return mu, d_mu
+
+
+def three_surfaces(k: int = 2, s: int = 24, spread: float = 0.45, seed: int = 0):
+    rng = np.random.default_rng(seed)
+    peaks = rng.normal(0.25, spread, (s, k))
+    heights = rng.uniform(1.0, 3.0, s)
+    return bumps(peaks, heights)
+
+
+def test_the_objective_is_q_expected_improvement_per_candidate():
+    """The docstring's claim, asserted numerically rather than shared textually.
+
+    `continuous_greedy_q_nei` scores the scan with a vectorized
+    `max(0, mu - bar)` mean; `q_expected_improvement` maxes over a batch first.
+    For a one-point batch they are the same formula, and this is what stops the
+    two drifting apart.
+
+    Not bitwise equal: numpy's pairwise summation adds the draws in a different
+    order for a contiguous column than for a 2-D reduction, so the two differ by
+    an ulp. A few ulps is the whole budget — there is no smoothing or
+    approximation in either, which is what makes this tighter than comparing
+    against a smoothed log-EI implementation would be.
+    """
+    mu, _ = three_surfaces()
+    pool = space_filling(2, 64)
+    values = mu(pool)
+    bar = np.full(values.shape[0], 0.8)
+
+    vectorized = np.maximum(values - bar[:, None], 0.0).mean(axis=0)
+    per_column = np.array([q_expected_improvement(values[:, [j]], bar) for j in range(values.shape[1])])
+    np.testing.assert_allclose(vectorized, per_column, rtol=8 * np.finfo(float).eps, atol=0.0)
+
+
+@pytest.mark.parametrize("q", [1, 3, 6])
+def test_continuous_picks_beat_the_best_the_pool_can_offer(q):
+    """The reason for the change: a discrete pick is capped by the pool's resolution."""
+    mu, d_mu = three_surfaces()
+    bar = np.full(24, 0.8)
+    rng = np.random.default_rng(1)
+
+    pool = space_filling(2, 4096, np.random.default_rng(1))
+    discrete = pool[greedy_q_nei(mu(pool), bar, q)]
+    polished = continuous_greedy_q_nei(mu, d_mu, pool, bar, q)
+
+    # Exact, not approximate: each pick starts from the discrete rule's own
+    # choice, and L-BFGS-B only moves off a start to improve on it.
+    assert q_expected_improvement(mu(polished), bar) >= q_expected_improvement(mu(discrete), bar)
+
+
+def test_a_single_pick_beats_a_dense_brute_force_grid():
+    mu, d_mu = three_surfaces()
+    bar = np.full(24, 0.8)
+    grid = np.array(list(itertools.product(np.linspace(-1.0, 1.0, 201), repeat=2)))
+    best_on_grid = np.maximum(mu(grid) - bar[:, None], 0.0).mean(axis=0).max()
+
+    picked = continuous_greedy_q_nei(mu, d_mu, space_filling(2, 2048, np.random.default_rng(0)), bar, 1)
+    assert q_expected_improvement(mu(picked), bar) >= best_on_grid - 1e-9
+
+
+def test_the_gradient_is_finite_nonzero_and_matches_central_differences():
+    mu, d_mu = three_surfaces()
+    bar = np.full(24, 0.8)
+    z = np.array([[0.15, -0.05]])
+    assert np.maximum(mu(z) - bar[:, None], 0.0).mean() > 0.0, "need a point where q-NEI is positive"
+
+    def acquisition(zz):
+        return np.maximum(mu(zz) - bar[:, None], 0.0).mean(axis=0)
+
+    gradient = ((mu(z) > bar[:, None])[:, :, None] * d_mu(z)).mean(axis=0)
+    assert np.isfinite(gradient).all() and np.abs(gradient).min() > 0.0
+
+    h = 1e-6
+    expected = np.column_stack(
+        [(acquisition(z + h * np.eye(2)[d]) - acquisition(z - h * np.eye(2)[d])) / (2 * h) for d in range(2)]
+    )
+    np.testing.assert_allclose(gradient, expected, rtol=1e-6)
+
+
+@pytest.mark.parametrize("offset", [0.25, 3.0], ids=["interior", "outside-the-box"])
+def test_picks_stay_inside_the_coded_box(offset):
+    rng = np.random.default_rng(2)
+    mu, d_mu = bumps(rng.normal(offset, 0.3, (16, 3)), rng.uniform(1.0, 3.0, 16))
+    picks = continuous_greedy_q_nei(mu, d_mu, space_filling(3, 2048, rng), np.full(16, 0.5), 5)
+    assert picks.shape == (5, 3)
+    assert np.abs(picks).max() <= 1.0
+
+
+def test_a_batch_does_not_stack_on_one_point():
+    """The bar rising after each pick is what spreads the batch.
+
+    q-NEI may legitimately replicate where the posterior is confident, so this
+    uses surfaces that genuinely disagree about where the peak is — there, a
+    batch collapsing to one point would mean the bar was not being raised.
+    """
+    mu, d_mu = three_surfaces(s=32, spread=0.6, seed=4)
+    picks = continuous_greedy_q_nei(
+        mu, d_mu, space_filling(2, 2048, np.random.default_rng(5)), np.full(32, 0.8), 4
+    )
+    distances = [
+        np.linalg.norm(picks[i] - picks[j]) for i, j in itertools.combinations(range(len(picks)), 2)
+    ]
+    assert min(distances) > 1e-3
+
+
+def test_a_single_draw_model_still_returns_distinct_points():
+    """A point-estimate surrogate has nothing left to improve on after one pick.
+
+    `_greedy_batch` fills the rest by highest mean; the continuous rule falls
+    back to the same ordering over its space-filling pool rather than repeating
+    one point `q` times or erroring.
+    """
+    mu, d_mu = bumps(np.array([[0.2, -0.3]]), np.array([2.0]))
+    picks = continuous_greedy_q_nei(
+        mu, d_mu, space_filling(2, 2048, np.random.default_rng(6)), np.array([0.5]), 4
+    )
+    assert len({tuple(p) for p in picks}) == 4
+    assert np.abs(picks).max() <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("q", "incumbent", "match"),
+    [
+        (0, np.zeros(24), "cannot choose 0"),
+        (99, np.zeros(24), "cannot choose 99 of 64"),
+        (2, np.zeros((24, 1)), "one value per draw"),
+    ],
+)
+def test_continuous_q_nei_rejects_bad_arguments(q, incumbent, match):
+    mu, d_mu = three_surfaces()
+    with pytest.raises(ValueError, match=match):
+        continuous_greedy_q_nei(mu, d_mu, space_filling(2, 64), incumbent, q)
+
+
+def test_polishing_matters_more_as_the_candidate_pool_thins_out():
+    """The reason `continuous_greedy_q_nei` exists, guarded so the claim can't rot.
+
+    A pool of `n` Sobol points gives `n ** (1/k)` levels per axis, so the
+    discrete pick's accuracy degrades with the number of factors while the
+    polished one does not. At 3 factors the pool is dense enough that polishing
+    is worth almost nothing; at 7 it is not. `benchmarks/polish_tradeoff.py`
+    is the same measurement across more factor counts, and documents the two
+    ways to measure it wrong.
+    """
+    low = compare(3, q=4, draws=128, n_candidates=1024, seed=0)
+    high = compare(7, q=4, draws=128, n_candidates=1024, seed=0)
+
+    assert low["levels_per_axis"] > high["levels_per_axis"]
+    assert low["gain"] < 0.02, "a dense pool leaves almost nothing to polish"
+    assert high["gain"] > 4 * max(low["gain"], 1e-3), "a thin pool should leave a lot"
+    # Interior batches, so this is search accuracy and not corner-seeking.
+    assert max(low["mean_abs_z"], high["mean_abs_z"]) < 0.6

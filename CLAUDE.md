@@ -69,8 +69,10 @@ Built:
   face-centred CCD around a fixed off-centre "house recipe" (coded −0.4,
   half-width 0.4), which is what a lab would actually have. Caches each run
   under `benchmarks/three_factor/results/runs/` (gitignored); writes `results/regret.csv`
-  and `results/regret.svg`. The README is deliberately minimal while the
-  benchmarks are in flux: no figures or result claims until they settle.
+  and `results/regret.svg`. The README now carries three figures and the
+  results above, since the arms and the scoring have settled; what it must not
+  claim is anything about beating a **one-shot** design, because no
+  `FixedDesign` arm exists yet.
 - `benchmarks/two_factor/rounds.py` — round-by-round 2-factor figures (`--arm qnei|rsm`,
   `--surface quadratic|gp`): per round, true mean | posterior mean |
   posterior uncertainty (sd of log mu for the GLM, sd of mu for BLR), with
@@ -105,6 +107,66 @@ What the benchmark has shown so far (don't relearn these):
 - **Fixed-radius iterative RSM repeats itself**: when the posterior-mean
   optimum sits near a boundary, `CentralComposite` proposes the identical
   design round after round (pure replication).
+- **q-NEI optimizes its picks; the candidate pool is only starting points.**
+  `continuous_greedy_q_nei` is the same greedy rule as `greedy_q_nei` — each
+  pick raises the bar for the next — but L-BFGS-B then moves each pick off its
+  candidate using the model's analytic derivative. There is no switch, because
+  each pick starts from the pool-only rule's own choice and only moves off it to
+  improve: provably never worse for a batch of one, and never worse in
+  measurement for a real batch (a better first pick raises the bar, so the
+  greedy guarantee does not carry over exactly). This is BoTorch's
+  `optimize_acqf(..., sequential=True)` over `qNoisyExpectedImprovement`, in
+  numpy over this repo's PyMC draws; `engine/acquisition.py` carries the
+  references and the one deliberate difference (starting points come from one
+  cached scan, not a re-scan per pick).
+
+  **The gain is a function of dimension, which is why the 2- and 3-factor
+  benchmarks barely show it.** A pool of `n` points spans `n ** (1/k)` levels
+  per factor: 64 at k=2, 16 at k=3, 8 at k=4, 5.3 at k=5, 4.0 at k=6, 2.8 at
+  k=8. Gain in the q-NEI objective itself, over synthetic posteriors of strictly
+  concave quadratics: +0.2%, +0.2%, +0.9%, +4.6%, +9.1%, +34.4% for k = 2, 3, 4,
+  5, 6, 8 (`benchmarks/polish_tradeoff.py`, seconds to rerun). Enumerating more
+  candidates is not the alternative: resolution improves as the `k`th root, so
+  matching k=3's density at k=8 would take 4 billion of them. In regret it is
+  never worse on any surface and clearly better on one — paired against
+  pool-only picks over 20 replicates, 2 factors GP **-10.3% (16/20 wins,
+  Wilcoxon p=0.002)**, 2 factors quadratic -0.8% (p=0.57), 3 factors GP -1.6%
+  (p=0.11), 3 factors quadratic -0.7% (p=0.23).
+
+  **Cost is a wash, but only after two fixes — don't reintroduce either.** A
+  first version ran 26x slower than picking from the pool, for two reasons that
+  look nothing alike:
+
+  1. *Computing a gradient for the scan.* The space-filling scan needs values
+     only, and a `(S, m, k)` derivative across a few thousand candidates
+     dominates everything else. Hence `continuous_greedy_q_nei` takes `mu` and
+     `d_mu` as separate callables, mirroring `search.maximize`'s `f`/`grad`.
+  2. *Thinning the output instead of the model.* An optimizer evaluates single
+     points hundreds of times and `sample` multiplies all 8000 draws through on
+     each one, so slicing the result afterwards saves nothing. `propose` calls
+     `SurrogateModel.thinned(512)` first. That is also why this now costs
+     *less* than the pool-only rule at k=2: its one pool scan is 15x cheaper.
+
+  Per round against a fitted Gamma GLM, paired in one process: 0.94x at k=2
+  q=10, 1.00x at k=3 q=16. Choosing a batch is 8-29% of a round and NUTS is the
+  rest, so this is not where a campaign's time goes. `--campaign` reruns it;
+  absolute seconds drift with the fit, so read the ratio.
+
+  **A third trap is in the measurement, not the code.** Allowing *convex* draws
+  (the quadratic prior `N(-0.5, 0.5)` puts ~16% of each coefficient's mass
+  positive) sends their optimum to a box corner that Sobol cannot reach in high
+  k. That alone reports +2454% at k=8, with the picks' mean `|z|` at 0.94
+  against 0.28 for concave draws. Real behaviour, but it measures corner-seeking
+  rather than search accuracy, so watch that column; `--convex` reproduces it.
+- **The q-NEI vs RSM gap is the acquisition, not the model** — the confound
+  this file used to list as open is now measured. `benchmarks/two_factor/ablation.py`
+  crosses {Gamma GLM, BLR} x {q-NEI, CCD}, 20 paired replicates. Median paired
+  difference from swapping the *acquisition*: -8.67 and -5.70 (quadratic, with
+  the GLM and BLR), -6.26 and -5.75 (GP), all p < 0.001. From swapping the
+  *model*: -2.57 (p=0.048), +0.02 (p=0.011), -0.83 (p=0.083), -0.04 (p=0.94) —
+  detectable in two cells, negligible in size everywhere. So "BO beats iterative
+  RSM" is a claim about the acquisition and survives changing the model under it.
+
 - **Seed fits need a balanced design**: a random 10-run 2-D seed sat at the
   ESS gate; an 11-run CCD cleared it comfortably.
 
@@ -125,8 +187,10 @@ src/malt/
     factors.py       # Factor (name/range/units/scale) — the feasible region
     glm.py           # design matrix, model definition, NUTS sampling, convergence report, predict_mu
     uncertainty.py   # (planned) posterior -> mu at query points, epistemic/aleatoric split
-    acquisition.py   # greedy q-NEI/q-UCB, batch Thompson, CCD placement over posterior draws
-    search.py        # space_filling (Sobol) and maximize over the coded box: no grids
+    acquisition.py   # greedy q-NEI/q-UCB, batch Thompson, CCD placement over posterior draws;
+                     #   continuous_greedy_q_nei polishes each pick instead of indexing a pool
+    search.py        # space_filling (Sobol) and maximize over the coded box: no grids;
+                     #   maximize takes an optional analytic gradient
     batch_effects.py # (planned) random-intercept batch model, marginal predictive draws
 
   active_learning/   # the campaign: abstractions + orchestration, no modeling maths
@@ -147,6 +211,8 @@ tests/<package>/        # one directory per package; active_learning/conftest.py
 benchmarks/             # harness.py (shared regret benchmark); each folder has its own results/:
   two_factor/           #   regret.py, and rounds.py: round-by-round posterior maps
   three_factor/         #   regret.py: the paired regret benchmark
+                        # polish_tradeoff.py: one acquisition step, 2-8 factors —
+                        #   what optimizing a pick past the candidate pool buys, and what it costs
 demo/                   # (planned) simulated end-to-end campaign
 reports/                # generated, not hand-maintained — see "Reporting"
 ```
@@ -220,6 +286,13 @@ Experimenter = SurrogateModel + Acquisition  --propose x-->  Environment
   a row's argmax across candidates, which is only meaningful if the row is one
   surface. A point-estimate model (OLS) is a legal surrogate with `n_draws == 1`;
   model-driven acquisitions must degrade gracefully on it, not error.
+- **`sample_jacobian(x)` is `sample`'s derivative, in real units, shape
+  `(n_draws, len(x), k)`**, with the last axis in `x`'s column order. It is the
+  one non-abstract method on `SurrogateModel`: the default is central finite
+  differences over `sample`, so every surrogate — a baseline, a test dummy —
+  works with a gradient-based acquisition, and a model with a closed-form
+  derivative overrides it (`GammaGLMSurrogate` does). Row `s` must be the
+  derivative of row `s` of `sample`, on the same surface — an optimizer walks one fixed surface per draw.
 - **`reliable` means "the fit worked"**, e.g. passed the convergence gate — not
   "has uncertainty".
 - **`Environment.query(x, rng)` returns a DataFrame**, one row per input row by
@@ -344,6 +417,17 @@ Experimenter = SurrogateModel + Acquisition  --propose x-->  Environment
   model version. Query grids must be encoded through **the fit's own
   factors**, never re-derived.
 
+- **The design matrix and its derivative come from one term layout.**
+  `glm._term_layout` returns each term's name, kind and the factor indices it
+  multiplies; `build_design_matrix` takes the product over those indices and
+  `design_jacobian` differentiates it by the product rule. Don't hand-write a
+  second ordered list — a permuted derivative column is silent, and
+  `predict_mu_grad` would return a confidently wrong gradient. `design_jacobian`
+  takes **coded** points, unlike `build_design_matrix`, because that is the
+  space an optimizer searches; `Factor.encode_derivative` converts to real
+  units. A gradient over raw-scale predictors reintroduces exactly the
+  conditioning problem coded encoding exists to solve.
+
   Note the ordering: predictors are encoded *first*, then the squared and
   interaction terms are formed from the coded values. Squaring raw values and
   encoding afterward is not the same thing and reintroduces the
@@ -454,6 +538,22 @@ what's recommended next. These are meant to be pushed to wherever people
 already look (chat, doc, email) — don't build a page someone has to
 remember to check.
 
+- **Figures are generated in both colour schemes, always.** `harness.Theme`
+  (and the copies in `two_factor/rounds.py` and `docs/figures/_surface.py`)
+  carries the tokens; every writer loops over `(LIGHT, DARK)` and writes
+  `name.svg` and `name_dark.svg`, so a committed pair cannot fall out of step.
+  The README pairs them in a `<picture>` with `prefers-color-scheme`.
+
+  Dark is **selected, not inverted**. The three arm colours are the same hues
+  re-stepped for a dark surface (`#3987e5`/`#d95926`/`#199e70` against
+  `#1a1a19`), validated against their own surface. Two consequences worth
+  keeping: in `rounds.py` the contours, run dots and proposal rings stay dark
+  in both schemes, because they sit on a panel's own pale ramp rather than on
+  the figure surface, and only the chrome flips; and `_surface.py`'s wheat ramp
+  drops its darkest stop for dark mode, or the peak reads as a hole. Aqua is
+  2.74:1 on the light surface, under the 3:1 floor, which is why every regret
+  line also carries a direct label.
+
 ## Testing
 
 - **Campaign tests use dummy actors** (`tests/active_learning/conftest.py`) so they
@@ -529,6 +629,8 @@ uv run --with pyright pyright src tests benchmarks  # type check in the project 
 uv run python -m benchmarks.three_factor.regret --replicates 20 --workers 8  # regret benchmark; resumes from its cache
 uv run python -m benchmarks.two_factor.regret --replicates 20 --workers 8    # same, 2 factors
 uv run python -m benchmarks.two_factor.rounds --arm qnei --surface gp  # one round-by-round figure, ~10 s
+uv run python -m benchmarks.polish_tradeoff            # dimension sweep, no sampling, ~20 s
+uv run python -m benchmarks.polish_tradeoff --campaign # same, as a share of a real round
 PYTENSOR_FLAGS='cxx=' uv run python -m demo.simulate_campaign      # not yet written
 PYTENSOR_FLAGS='cxx=' uv run python -m malt.mcp_server.server  # not yet written
 ```

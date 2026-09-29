@@ -7,8 +7,10 @@ import pandas as pd
 import pytest
 
 from malt.simulation.oracle import GammaLikelihood, Oracle
+from malt.active_learning.actors import SurrogateModel
 from malt.active_learning.surrogates import BayesianLinearRegression, GammaGLMSurrogate
 from malt.engine.factors import Factor
+from malt.engine.glm import design_jacobian
 
 FACTORS = (Factor("x1", 0.0, 10.0), Factor("x2", 0.1, 10.0, scale="log"))
 
@@ -130,6 +132,94 @@ def test_glm_is_reproducible_from_rng(linear_glm, gamma_data):
     again = GammaGLMSurrogate(FACTORS, terms=("linear",)).condition(gamma_data, np.random.default_rng(1))
     x = gamma_data.iloc[:5]
     np.testing.assert_array_equal(again.sample(x), linear_glm.sample(x))
+
+
+# sample_jacobian: the analytic derivative against the ABC's finite-difference default
+
+
+def assert_matches_finite_differences(analytic: np.ndarray, reference: np.ndarray) -> None:
+    """Compare two Jacobians where one side is a central difference.
+
+    A central difference carries an absolute error of roughly `eps**(2/3)` times
+    the function's own scale, so entries whose derivative is near zero cannot
+    meet a pure relative tolerance however correct the other side is. The floor
+    is tied to the largest entry rather than being a bare constant, so the test
+    stays meaningful whatever scale the response happens to be on.
+    """
+    np.testing.assert_allclose(
+        analytic, reference, rtol=1e-6, atol=1e-6 * np.abs(reference).max()
+    )
+
+
+def test_glm_jacobian_matches_the_finite_difference_default(linear_glm, gamma_data):
+    """The GLM's closed-form derivative is the thing an optimizer descends.
+
+    The default is the reference: it only calls `sample`, so it cannot get the
+    term order or the coded/real chain rule wrong the way the analytic path
+    could — and getting either wrong is silent.
+    """
+    x = design_points(6, np.random.default_rng(11))
+    analytic = linear_glm.sample_jacobian(x)
+    assert analytic.shape == (8000, 6, 2)
+    assert_matches_finite_differences(analytic, SurrogateModel.sample_jacobian(linear_glm, x))
+
+
+def test_glm_jacobian_covers_the_full_quadratic_and_log_scale(gamma_data):
+    """The full quadratic exercises squared and interaction derivatives at once.
+
+    `x2` is log-scaled, so this also covers `Factor.encode_derivative`'s
+    `1 / real` factor — a constant step would pass here and still be wrong.
+    """
+    glm = GammaGLMSurrogate(FACTORS).condition(gamma_data, np.random.default_rng(1))
+    x = design_points(5, np.random.default_rng(12))
+    assert_matches_finite_differences(
+        glm.sample_jacobian(x), SurrogateModel.sample_jacobian(glm, x)
+    )
+
+
+def test_glm_jacobian_follows_the_column_order_of_x(linear_glm):
+    x = design_points(4, np.random.default_rng(13))
+    swapped = x.loc[:, ["x2", "x1"]]
+    np.testing.assert_allclose(
+        linear_glm.sample_jacobian(swapped), linear_glm.sample_jacobian(x)[:, :, ::-1]
+    )
+
+
+def test_glm_jacobian_refuses_columns_that_are_not_the_factors(linear_glm, gamma_data):
+    with pytest.raises(ValueError, match="one column per factor"):
+        linear_glm.sample_jacobian(gamma_data.iloc[:3])  # carries the response column too
+
+
+def test_blr_finite_difference_default_matches_its_exact_derivative():
+    """The default itself, checked where the exact answer is available.
+
+    BLR's `sample` is linear in the design matrix, so its derivative is the
+    coefficient draws times the design Jacobian — no finite differences needed.
+    Every surrogate without an override relies on this default being right.
+    """
+    m = BayesianLinearRegression(FACTORS, features="quadratic").condition(
+        linear_data(60, seed=3), np.random.default_rng(1)
+    )
+    assert m.coef_draws is not None
+    x = design_points(5, np.random.default_rng(15))
+    real = x.to_numpy(dtype=float)
+    z = np.column_stack([f.encode(real[:, j]) for j, f in enumerate(FACTORS)])
+
+    # An explicit intercept column sits in front of the design, so its
+    # derivative is zero and the coefficient columns shift by one.
+    jacobian = design_jacobian(z, FACTORS)
+    d_z_d_x = np.column_stack([f.encode_derivative(real[:, j]) for j, f in enumerate(FACTORS)])
+    exact = np.tensordot(m.coef_draws[:, 1:], jacobian, axes=(1, 1)) * d_z_d_x[None, :, :]
+
+    assert_matches_finite_differences(m.sample_jacobian(x), exact)
+
+
+@pytest.mark.parametrize(
+    "prior", [BayesianLinearRegression(FACTORS), GammaGLMSurrogate(FACTORS)], ids=["blr", "glm"]
+)
+def test_unconditioned_model_refuses_a_jacobian(prior):
+    with pytest.raises(ValueError, match="condition on the seed first"):
+        prior.sample_jacobian(design_points(3, np.random.default_rng(0)))
 
 
 # Shared behaviour
