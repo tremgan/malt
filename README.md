@@ -134,9 +134,9 @@ recover after a crash beyond the file itself.
   column it is with `GammaGLMSurrogate(FACTORS, response="OD600")`.
 - **More runs than the model has terms.** A full quadratic over `k` factors has
   `2k + k(k-1)/2` of them, so two factors need at least 6 runs and three need 10.
-  Below that, start first-order with `GammaGLMSurrogate(FACTORS, terms=("linear",))`
-  and move to the quadratic once you have the runs for it. A balanced design
-  fits better than the same number of scattered points.
+  Below that, pass `terms=("linear",)` to start first-order and move to the
+  quadratic once you have the runs for it. A balanced design fits better than
+  the same number of scattered points.
 - **Ranges you are willing to pipette**, one `Factor` each. Use `scale="log"` for
   anything spanning an order of magnitude or more: a factor over 0.1 to 10 g/L
   has an arithmetic centre of 5.05 and a geometric one of 1.0, and centre points
@@ -210,3 +210,37 @@ attributed to one or the other:
 ```bash
 uv run python -m benchmarks.two_factor.ablation --replicates 20 --workers 8
 ```
+
+## Planned
+
+None of this exists yet.
+
+**A state store, and an MCP server over it.** The agent-facing tools are meant to
+be the primary interface, with a human checkpoint wired into the data rather than
+into somebody's discipline: a batch is written `proposed`, and only a person moves
+it to `approved`. Nothing in the repo will make that transition on its own. Every
+tool call has to be resumable, so an agent picking up a campaign after a restart
+can reconstruct where things stand from the store alone. Today that state is
+whatever CSV you keep.
+
+**Batch effects.** Runs done in one session share an operator, a media lot and a
+cell state, and pretending otherwise attributes session-to-session variation to
+the media composition. The plan is a random intercept per batch, which is also
+why a batch carries an ID from proposal through results rather than being
+flattened into one long frame. The part that matters is what the acquisition
+then sees: for a batch that has not been run yet, its offset is itself unknown,
+so the uncertainty has to integrate over that variance instead of using the
+fixed effects alone. Getting that wrong understates uncertainty everywhere and
+produces no error.
+
+**Execution through [PyLabRobot](https://github.com/pylabrobot/pylabrobot).** A
+hardware-agnostic layer for liquid handlers, so an approved batch could become a
+protocol a deck actually runs, and the results could come back without being
+retyped. Note where the boundary sits: malt would emit a batch and PyLabRobot
+would execute one that a human has already approved. The approval does not become
+a function call, and nothing in `engine` or `active_learning` will reach for a
+robot.
+
+**A one-shot design arm in the benchmark.** `FixedDesign` exists but is not in any
+benchmark, so the comparison the benchmarks section admits is missing, against a
+Box-Behnken or CCD run in a single block, stays missing until it is.
