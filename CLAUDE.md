@@ -470,13 +470,34 @@ Experimenter = SurrogateModel + Acquisition  --propose x-->  Environment
 
   Sampling uses `nuts_sampler="nutpie"`, which compiles the log-density
   with numba. On macOS 26+ every fit **requires `PYTENSOR_FLAGS='cxx='`**
-  or it dies with `ld: library 'd64' not found` — PyTensor hardcodes a
-  `-ld64` linker flag with no config switch, and the current linker reads
-  it as a request to link a library named `d64`. Disabling the C backend
-  costs ~nothing here because nutpie never used it for the heavy work.
+  or it dies with `ld: library 'd64' not found`. The cause is a typo
+  upstream, not anything about this repo: `pytensor/link/c/cmodule.py`
+  appends `-ld64` when `mac_ver()[0] >= 15`, meaning to select Apple's
+  classic linker, but clang parses that as `-l d64`. The flag it wants is
+  `-ld_classic`, which clang 21 accepts and then ignores ("no longer
+  supported and will be ignored"), so the correct emission on this
+  toolchain is no flag at all. Still present in pytensor 3.3.2, the
+  current release, and pymc pins `pytensor<3.4`, so there is no upgrade
+  path — re-check when that pin moves.
+
+  **Turning the C backend off is not a compromise here, so don't spend
+  effort restoring it.** PyTensor 3 defaults to the Numba linker and
+  nutpie compiles with numba, so the C backend never runs: measured on
+  the same fit, 2.81 s with `cxx=` against 2.86 s with a working
+  compiler, and the suite 9.77 s either way. If something ever does need
+  the C backend, the fix that keeps it is a wrapper script named
+  `clang++` that drops `-ld64` and execs the real one, pointed at by
+  `cxx=<path>` — verified to restore `CLinker` and `lazylinker_ext`. The
+  name matters: PyTensor checks the basename and warns on anything but
+  `clang++`. It buys nothing today.
+
   Note `ldflags=` is *not* a PyTensor flag and does not fix this; it
-  silently falls back to the Python VM and looks like it worked. (This is
-  documented here only, not in the README.)
+  silently falls back to the Python VM and looks like it worked. The
+  README's Install section carries the `~/.pytensorrc` form for users
+  (`[global]` / `cxx=`). Don't tell anyone to append that block to an
+  existing `~/.pytensorrc`: a second `[global]` section raises
+  `DuplicateSectionError` on the next import, so the note says to add
+  `cxx=` under the existing one.
 - **Always check convergence before trusting a fit.** The gate is strict
   0 divergences, max r_hat < 1.01, and min ESS >= 1000 — **bulk and tail**.
   Tail ESS is gated because acquisition is Monte Carlo over draws and reads

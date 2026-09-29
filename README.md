@@ -2,6 +2,8 @@
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
+[![tests](https://github.com/tremgan/malt/actions/workflows/ci.yml/badge.svg)](https://github.com/tremgan/malt/actions/workflows/ci.yml)
+
 malt picks which media compositions to test next. It fits a Bayesian Gamma GLM
 model to growth data (not Gaussian since growth is bounded from below by 0) and proposes the next batch by Bayesian optimization.
 
@@ -42,6 +44,19 @@ uv sync
 uv run pytest
 ```
 
+### On macOS
+
+The first fit dies with `ld: library 'd64' not found`, from a PyTensor bug on
+macOS 15 and later. Turn its C backend off, which costs nothing here because
+sampling goes through nutpie:
+
+```bash
+printf '[global]\ncxx=\n' > ~/.pytensorrc
+```
+
+If you already have a `~/.pytensorrc`, add `cxx=` under its `[global]` instead
+of running that, which would overwrite it.
+
 ## Using it in a lab
 
 malt does not talk to your hardware and does not schedule anything. It reads the
@@ -49,10 +64,15 @@ runs you have already done and hands back the next batch to run. What happens to
 that batch is yours: someone approves it, someone pipettes it, and the results
 come back whenever they come back.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/loop_dark.svg">
-  <img alt="The loop: malt fits a model and proposes a batch, a person approves it, the lab runs it, and the results go back to malt for the next round" src="docs/figures/loop.svg">
-</picture>
+```
+  malt                                             your lab
+  ----                                             --------
+
+  fit ------> propose ----- a batch of recipes --> approve
+  ^                                                |
+  |                                                v
+  observe <----- what they measured -------------- run
+```
 
 ```python
 import numpy as np
