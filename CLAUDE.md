@@ -122,12 +122,12 @@ What the benchmark has shown so far (don't relearn these):
 
   **The gain is a function of dimension, which is why the 2- and 3-factor
   benchmarks barely show it.** A pool of `n` points spans `n ** (1/k)` levels
-  per factor: 64 at k=2, 16 at k=3, 8 at k=4, 5.3 at k=5, 4.0 at k=6, 2.8 at
-  k=8. Gain in the q-NEI objective itself, over synthetic posteriors of strictly
-  concave quadratics: +0.2%, +0.2%, +0.9%, +4.6%, +9.1%, +34.4% for k = 2, 3, 4,
-  5, 6, 8 (`benchmarks/polish_tradeoff.py`, seconds to rerun). Enumerating more
-  candidates is not the alternative: resolution improves as the `k`th root, so
-  matching k=3's density at k=8 would take 4 billion of them. In regret it is
+  per factor: 64 at k=2, 16 at k=3, 8 at k=4, 4.0 at k=6, 2.8 at k=8. The gain
+  in the q-NEI objective tracks that, from roughly nothing at k=2 to an order of
+  magnitude more at k=7; `test_polishing_matters_more_as_the_candidate_pool_thins_out`
+  asserts the direction so it cannot rot. Enumerating more candidates is not
+  the alternative: resolution improves as the `k`th root, so matching k=3's
+  density at k=8 would take 4 billion of them. In regret it is
   never worse on any surface and clearly better on one — paired against
   pool-only picks over 20 replicates, 2 factors GP **-10.3% (16/20 wins,
   Wilcoxon p=0.002)**, 2 factors quadratic -0.8% (p=0.57), 3 factors GP -1.6%
@@ -149,15 +149,15 @@ What the benchmark has shown so far (don't relearn these):
 
   Per round against a fitted Gamma GLM, paired in one process: 0.94x at k=2
   q=10, 1.00x at k=3 q=16. Choosing a batch is 8-29% of a round and NUTS is the
-  rest, so this is not where a campaign's time goes. `--campaign` reruns it;
-  absolute seconds drift with the fit, so read the ratio.
+  rest, so this is not where a campaign's time goes.
 
   **A third trap is in the measurement, not the code.** Allowing *convex* draws
   (the quadratic prior `N(-0.5, 0.5)` puts ~16% of each coefficient's mass
   positive) sends their optimum to a box corner that Sobol cannot reach in high
   k. That alone reports +2454% at k=8, with the picks' mean `|z|` at 0.94
   against 0.28 for concave draws. Real behaviour, but it measures corner-seeking
-  rather than search accuracy, so watch that column; `--convex` reproduces it.
+  rather than search accuracy. Force the draws concave before believing any
+  high-dimensional number here.
 - **The q-NEI vs RSM gap is the acquisition, not the model** — the confound
   this file used to list as open is now measured. `benchmarks/two_factor/ablation.py`
   crosses {Gamma GLM, BLR} x {q-NEI, CCD}, 20 paired replicates. Median paired
@@ -211,8 +211,6 @@ tests/<package>/        # one directory per package; active_learning/conftest.py
 benchmarks/             # harness.py (shared regret benchmark); each folder has its own results/:
   two_factor/           #   regret.py, and rounds.py: round-by-round posterior maps
   three_factor/         #   regret.py: the paired regret benchmark
-                        # polish_tradeoff.py: one acquisition step, 2-8 factors —
-                        #   what optimizing a pick past the candidate pool buys, and what it costs
 demo/                   # (planned) simulated end-to-end campaign
 reports/                # generated, not hand-maintained — see "Reporting"
 ```
@@ -629,8 +627,6 @@ uv run --with pyright pyright src tests benchmarks  # type check in the project 
 uv run python -m benchmarks.three_factor.regret --replicates 20 --workers 8  # regret benchmark; resumes from its cache
 uv run python -m benchmarks.two_factor.regret --replicates 20 --workers 8    # same, 2 factors
 uv run python -m benchmarks.two_factor.rounds --arm qnei --surface gp  # one round-by-round figure, ~10 s
-uv run python -m benchmarks.polish_tradeoff            # dimension sweep, no sampling, ~20 s
-uv run python -m benchmarks.polish_tradeoff --campaign # same, as a share of a real round
 PYTENSOR_FLAGS='cxx=' uv run python -m demo.simulate_campaign      # not yet written
 PYTENSOR_FLAGS='cxx=' uv run python -m malt.mcp_server.server  # not yet written
 ```

@@ -19,8 +19,6 @@ from malt.engine.acquisition import (
 from malt.engine.factors import Factor, candidate_grid
 from malt.engine.search import space_filling
 
-from benchmarks.polish_tradeoff import compare
-
 
 def marginal_ei(draws: np.ndarray, incumbent: np.ndarray) -> np.ndarray:
     return np.maximum(draws - incumbent[:, None], 0.0).mean(axis=0)
@@ -327,18 +325,24 @@ def test_continuous_q_nei_rejects_bad_arguments(q, incumbent, match):
 def test_polishing_matters_more_as_the_candidate_pool_thins_out():
     """The reason `continuous_greedy_q_nei` exists, guarded so the claim can't rot.
 
-    A pool of `n` Sobol points gives `n ** (1/k)` levels per axis, so the
-    discrete pick's accuracy degrades with the number of factors while the
-    polished one does not. At 3 factors the pool is dense enough that polishing
-    is worth almost nothing; at 7 it is not. `benchmarks/polish_tradeoff.py`
-    is the same measurement across more factor counts, and documents the two
-    ways to measure it wrong.
+    A pool of `n` Sobol points spans `n ** (1 / k)` levels per factor, so a
+    discrete pick's accuracy degrades with the number of factors while a
+    polished one does not. At 2 factors the pool is dense enough that polishing
+    is worth almost nothing; at 7 it is not. That is the whole case for paying
+    for the derivative, and it is invisible in the 2- and 3-factor regret
+    benchmarks, so it is asserted here instead.
     """
-    low = compare(3, q=4, draws=128, n_candidates=1024, seed=0)
-    high = compare(7, q=4, draws=128, n_candidates=1024, seed=0)
 
-    assert low["levels_per_axis"] > high["levels_per_axis"]
-    assert low["gain"] < 0.02, "a dense pool leaves almost nothing to polish"
-    assert high["gain"] > 4 * max(low["gain"], 1e-3), "a thin pool should leave a lot"
-    # Interior batches, so this is search accuracy and not corner-seeking.
-    assert max(low["mean_abs_z"], high["mean_abs_z"]) < 0.6
+    def gain(k: int, q: int = 4, n_candidates: int = 1024) -> float:
+        mu, d_mu = three_surfaces(k, s=128, seed=k)
+        pool = space_filling(k, n_candidates, np.random.default_rng(0))
+        incumbent = np.quantile(mu(pool), 0.9, axis=1)
+        discrete = q_expected_improvement(mu(pool[greedy_q_nei(mu(pool), incumbent, q)]), incumbent)
+        polished = q_expected_improvement(
+            mu(continuous_greedy_q_nei(mu, d_mu, pool, incumbent, q)), incumbent
+        )
+        return (polished - discrete) / discrete
+
+    dense, thin = gain(2), gain(7)
+    assert dense < 0.02, "a pool spanning 32 levels per factor leaves almost nothing to polish"
+    assert thin > 5 * max(dense, 1e-3), "a pool spanning 2.7 leaves a lot"

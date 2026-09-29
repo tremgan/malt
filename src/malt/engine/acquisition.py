@@ -87,9 +87,8 @@ def greedy_q_nei(candidate_draws: np.ndarray, incumbent: np.ndarray, q: int) -> 
 
     No campaign rule calls this any more: `continuous_greedy_q_nei` starts from
     the same pick and then optimizes it. This stays public as that rule's
-    reference point — the floor its tests assert against and the arm
-    `benchmarks/polish_tradeoff.py` measures — and as the cheaper choice when
-    only draws at fixed candidates are available.
+    reference point, the floor its tests assert against, and as the cheaper
+    choice when only draws at fixed candidates are available.
     """
     return _greedy_batch(candidate_draws, np.asarray(incumbent, dtype=float), q)
 

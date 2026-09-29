@@ -103,15 +103,6 @@ the campaign is still descending at round 4 rather than converged:
 uv run python -m benchmarks.two_factor.rounds --arm qnei --surface gp
 ```
 
-`polish_tradeoff` isolates the continuous optimization: what it gains over
-picking from the pool, and what it costs, in 2 to 8 factors. `--campaign` times
-it against a fitted model instead of a synthetic one.
-
-```bash
-uv run python -m benchmarks.polish_tradeoff
-uv run python -m benchmarks.polish_tradeoff --campaign
-```
-
 `ablation` crosses the model against the acquisition, so the gap above can be
 attributed to one or the other:
 
