@@ -42,6 +42,59 @@ uv sync
 uv run pytest
 ```
 
+## Using it
+
+Declare the factors, hand it the runs you already have, and ask for the next
+batch. There is no campaign object to drive and nothing that talks to a lab:
+`propose` returns a frame, and what happens to it is yours.
+
+```python
+import numpy as np
+import pandas as pd
+
+from malt.active_learning.acquisitions import QNoisyExpectedImprovement
+from malt.active_learning.actors import Experimenter
+from malt.active_learning.surrogates import GammaGLMSurrogate
+from malt.engine.factors import Factor
+
+FACTORS = (
+    Factor("glucose", 1.0, 20.0, units="g/L"),
+    Factor("nitrogen", 0.1, 10.0, units="g/L", scale="log"),
+)
+
+rng = np.random.default_rng(0)
+lab = Experimenter(GammaGLMSurrogate(FACTORS), QNoisyExpectedImprovement(FACTORS))
+
+lab.observe(pd.read_csv("runs.csv"), rng)  # past runs: a column per factor, plus y
+if not lab.surrogate_model.reliable:       # the MCMC convergence gate
+    raise SystemExit("fit did not converge; do not run this batch")
+
+print(lab.propose(6, rng).round(2))
+```
+
+Starting from 11 runs around a house recipe of about 3 g/L glucose and 0.2 g/L
+nitrogen, which yielded 0.04 to 0.45 g/L of biomass:
+
+```
+   glucose  nitrogen
+0    20.00     10.00
+1    14.48     10.00
+2    20.00      2.62
+3    17.02     10.00
+4    11.81     10.00
+5    15.26      3.10
+```
+
+Several of those sit on a bound, which is the right answer and not a bug: every
+run so far has been poor and none has shown where the response turns over, so
+the batch leaves the house recipe and probes the top of the allowed range, while
+keeping two points back where it suspects the peak already is.
+
+Measure the six, append them to `runs.csv` with their biomass, and call
+`observe` then `propose` again. `Factor` bounds are the only thing keeping a
+proposal inside what you can actually pipette, so set them to the range you are
+willing to run.
+
 ## Benchmarks
 
 The regret benchmarks score Bayesian optimization against iterative
