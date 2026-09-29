@@ -184,14 +184,18 @@ uv run python -m benchmarks.three_factor.regret --replicates 20 --workers 8
   <img alt="Cumulative regret by round over three factors: q-NEI flattens while iterative RSM and random batches stay linear" src="benchmarks/three_factor/results/regret.svg">
 </picture>
 
-Three factors, 16 runs a round, 20 paired campaigns per arm. q-NEI starts level
-with random in the first round, when it has only the seed to go on, then
-flattens to about 0.19 of a run's biomass lost per run on the quadratic surface
-while random stays near 0.86. Crossing model against acquisition on the
-two-factor benchmark puts that gap in the acquisition rather than the Gamma GLM:
-swapping q-NEI for a central composite costs a median 5.7 to 8.7 regret with
-either model, while swapping the model moves it by at most 2.6, and by under 0.1
-in half the cells.
+Three factors, 16 runs a round, four rounds, 20 paired campaigns per arm. The
+comparison that counts is against iterative RSM, since that is the method a lab
+would otherwise use. After 81 runs, cumulative regret is a median 43% lower on
+the quadratic surface — 23.5 against 41.0, with q-NEI ahead in 20 of 20 paired
+replicates — and 20% lower on the GP surface, 28.7 against 35.2, ahead in 17 of
+20. Random batches are in the figure as a floor rather than a contender, and
+finish at 56.0 and 42.0.
+
+Crossing model against acquisition on the two-factor benchmark puts that gap in
+the acquisition rather than the Gamma GLM: swapping q-NEI for a central
+composite costs a median 5.7 to 8.7 regret with either model, while swapping the
+model moves it by at most 2.6, and by under 0.1 in half the cells.
 
 Both baselines are iterative. A one-shot Box-Behnken or CCD, which is what a lab
 would more often run, is not in the benchmark yet, so nothing here yet supports

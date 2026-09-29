@@ -99,6 +99,16 @@ What the benchmark has shown so far (don't relearn these):
   model is right, since spread-out runs pin the peak well. Cumulative regret
   isolates the acquisition: random is linear (~0.66 per run), q-NEI flattens
   to ~0.05 per run on the quadratic surface after one round.
+- **Quote the RSM comparison, not the random one.** Random batches are a floor,
+  not something a lab would run, so the headline number is against iterative
+  RSM. Recomputed from `benchmarks/three_factor/results/regret.csv`, final
+  round (81 runs), paired by replicate: on the quadratic surface median
+  cumulative regret 23.5 (q-NEI) against 41.0 (RSM), median paired ratio 0.572,
+  q-NEI ahead in 20/20, Wilcoxon p=1.9e-06; on the GP surface 28.7 against
+  35.2, ratio 0.799, ahead in 17/20, p=8.2e-05. Random finishes at 56.0 and
+  42.0. **Report both surfaces**: the quadratic is the in-family easy case, and
+  quoting its 43% alone overstates the method by more than a factor of two
+  against the GP surface's 20%.
 - **The arms still differ in model as well as acquisition** (q-NEI and
   random use the GLM, RSM uses BLR). The experimenter also shares one random
   stream between model and acquisition, so a model-free rule draws different
