@@ -33,7 +33,8 @@ state store and the agent-facing tools come next.
 
 ## Install
 
-Needs Python 3.12+ and [uv](https://docs.astral.sh/uv/):
+Needs [uv](https://docs.astral.sh/uv/), which fetches its own Python 3.12 if
+the machine has not got one:
 
 ```bash
 git clone https://github.com/tremgan/malt.git
