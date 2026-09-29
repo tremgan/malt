@@ -2,9 +2,8 @@
 
 **M**edia **A**ctive-**L**earning **T**oolkit.
 
-malt picks which media compositions to test next. It fits a Bayesian Gamma
-model to growth data and proposes the next batch by Bayesian optimization.
-Nothing reaches the lab until a person approves the batch.
+malt picks which media compositions to test next. It fits a Bayesian Gamma GLM
+model to growth data (not Gaussian since growth is bounded from below by 0) and proposes the next batch by Bayesian optimization.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/quadratic_oracle_dark.svg">
