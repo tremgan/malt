@@ -44,6 +44,7 @@ from matplotlib import patheffects  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.ticker import MaxNLocator  # noqa: E402
 
 from malt.active_learning.acquisitions import CentralComposite, QNoisyExpectedImprovement  # noqa: E402
@@ -109,6 +110,8 @@ GREYS = LinearSegmentedColormap.from_list(
 # the figure surface, so they stay dark. Flipping them white for dark mode would
 # hide them at the pale end of every ramp, which is most of each panel.
 MARK = "#1f1f1e"
+# The pale end every ramp starts from, so a key card reads like a panel does.
+PANEL = "#f4f4f2"
 
 
 @dataclass(frozen=True)
@@ -224,9 +227,28 @@ def plot(journal: LabJournal, oracle: Oracle, arm: str, surface: str, out: Path)
                 bar.set_ticks(ticks, labels=[f"{t:g}" for t in ticks])
                 bar.ax.minorticks_off()
             bar.ax.tick_params(colors=theme.ink_muted, labelsize=8)
+        # A key rather than the same words in the title, since which points are
+        # already run and which are only proposed is the thing to read first.
+        # No counts here: they differ per row, and each row label carries its own.
+        # It carries its own pale card in both schemes: the markers are panel
+        # ink, so on a dark figure surface they would otherwise disappear, and
+        # recolouring them would stop the key matching the marks it labels.
+        key = [
+            Line2D([], [], linestyle="none", marker="o", markersize=4, markerfacecolor=MARK,
+                   markeredgecolor="white", markeredgewidth=0.6, label="already run"),
+            Line2D([], [], linestyle="none", marker="o", markersize=8, markerfacecolor="none",
+                   markeredgecolor=MARK, markeredgewidth=1.3, label="proposed next"),
+            Line2D([], [], linestyle="none", marker="*", markersize=13, markerfacecolor="white",
+                   markeredgecolor=MARK, markeredgewidth=1.0, label="true optimum"),
+        ]
+        legend = fig.legend(
+            handles=key, loc="upper right", bbox_to_anchor=(0.995, 0.995), ncol=3,
+            frameon=True, facecolor=PANEL, edgecolor="none", framealpha=1.0,
+            fontsize=9, labelcolor=MARK, handletextpad=0.5, columnspacing=1.6, borderpad=0.6,
+        )
+        legend.set_zorder(10)
         fig.suptitle(
-            f"{title} on the {TITLES[surface]} surface: dots observed, rings proposed next, "
-            "star true optimum",
+            f"{title} on the {TITLES[surface]} surface",
             fontsize=10, color=theme.ink, x=0.02, ha="left",
         )
         target = out.with_name(f"{out.stem}{theme.suffix}{out.suffix}")
