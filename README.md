@@ -49,6 +49,11 @@ runs you have already done and hands back the next batch to run. What happens to
 that batch is yours: someone approves it, someone pipettes it, and the results
 come back whenever they come back.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/loop_dark.svg">
+  <img alt="The loop: malt fits a model and proposes a batch, a person approves it, the lab runs it, and the results go back to malt for the next round" src="docs/figures/loop.svg">
+</picture>
+
 ```python
 import numpy as np
 import pandas as pd
