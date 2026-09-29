@@ -148,7 +148,19 @@ class Acquisition(ABC):
 
 
 class Environment(ABC):
-    """Something that can be queried at design points for noisy observations, real or synthetic."""
+    """A simulated lab: somewhere a batch can be run and read back in one call.
+
+    **Do not implement this for real hardware or a real LIMS.** `query` is
+    synchronous, so a real implementation would let `run_campaign` submit work
+    and take results with nobody in between, and a proposed batch reaching a
+    bench without an explicit human approval is the one thing this design rules
+    out. `simulation.oracle.Oracle` is what this exists for.
+
+    A real campaign uses the two `Experimenter` methods directly, days apart:
+    `propose` returns a batch, a person approves it, the lab runs it, and
+    `observe` takes the results back whenever they arrive. Nothing in this class
+    sits in that loop.
+    """
 
     __slots__ = ()
 
@@ -160,15 +172,22 @@ class Environment(ABC):
         column — one noisy draw of y, not the mean mu: querying the same point
         twice gives two different observations — plus any covariates the
         environment knows about how the runs were done, e.g. a batch label,
-        operator or inoculum. Rows correspond to `x` by position. A synthetic
-        environment draws its noise from `rng`; a real one ignores it.
+        operator or inoculum. Rows correspond to `x` by position. Noise is drawn
+        from `rng`, which is what makes a campaign reproducible from its seed.
         """
         ...
 
 
 @dataclass
 class Experimenter:
-    """A surrogate model paired with an acquisition rule — the campaign's decision-maker."""
+    """A surrogate model paired with an acquisition rule — the campaign's decision-maker.
+
+    These two methods are the whole interface to a real campaign. `propose`
+    hands back a batch and stops; approving and running it happen outside, on
+    whatever timescale the lab works at; `observe` takes the results back. The
+    pair is what `run_campaign` drives in a simulation, and what the state store
+    and the agent-facing tools will drive for real.
+    """
 
     surrogate_model: SurrogateModel
     acquisition: Acquisition

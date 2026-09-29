@@ -328,9 +328,18 @@ Experimenter = SurrogateModel + Acquisition  --propose x-->  Environment
   randomness derives it from the journal (see `RandomStopRule`). `run_campaign` takes
   a single rule, default `MaxRoundsRule(10)`; combine with `UnreliableFitRule()`
   so a run can't propose from a failed fit.
-- **`run_campaign` is the simulation path only.** It queries synchronously. A real
-  campaign proposes, waits for approval and results, then observes — the same
-  two `Experimenter` methods, days apart, driven by `state/` and the MCP tools.
+- **`run_campaign` is the simulation path only, and so is `Environment`.** It
+  queries synchronously. A real campaign proposes, waits for approval and
+  results, then observes — the same two `Experimenter` methods, days apart,
+  driven by `state/` and the MCP tools.
+
+  **Never implement `Environment` for real hardware or a LIMS.** Its docstring
+  used to offer itself as "real or synthetic", which invited exactly that, and
+  a real `query` would let `run_campaign` submit work and take results with
+  nobody in between — the one path "physical execution is always gated" exists
+  to forbid. `Oracle` and the test dummies are its only implementers and that is
+  the intended set. If a real lab ever needs an abstraction here, it belongs on
+  the reading side only, behind the `approved` transition in `state/`.
 
 ## Design principles (don't violate these without discussion)
 

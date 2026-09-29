@@ -132,6 +132,11 @@ def run_campaign(
     The rule is checked before every round, including the first. Combine
     several with `&` and `|` — a target criterion is capped with
     `target | MaxRoundsRule(k)`.
+
+    **Simulated environments only** (see `Environment`): this closes the loop
+    with no approval step, which is right for a benchmark and wrong for a bench.
+    A real campaign calls `experimenter.propose` and `experimenter.observe`
+    itself, with a person and some days in between.
     """
     # Independent streams, not two generators on the same seed — those would
     # produce identical sequences and correlate choices with observation noise.
