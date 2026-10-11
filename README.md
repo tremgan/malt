@@ -131,7 +131,7 @@ One point still goes to the glucose bound, because nothing yet rules out more.
   land in very different places depending on which you meant. Historical runs
   from outside the range you declare are still fine to fit on.
 
-## Benchmarks
+## Simulated Campaigns
 
 The regret benchmarks score Bayesian optimization against iterative
 response-surface DOE and against random batches, by cumulative regret on a
