@@ -90,13 +90,6 @@ nitrogen, which yielded 0.04 to 0.45 g/L of biomass:
 5    15.26      3.10
 ```
 
-Several of those sit on a bound, which is the right answer and not a bug: every
-run so far has been poor and none has shown where the response turns over, so
-the batch leaves the house recipe and probes the top of the allowed range, while
-keeping two points back where it suspects the peak already is. `Factor` bounds
-are the only thing keeping a proposal inside what you can actually pipette, so
-set them to the range you are willing to run.
-
 Once the batch has been run and the biomass typed in, the next round is the same
 two calls:
 
