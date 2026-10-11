@@ -160,10 +160,6 @@ the acquisition rather than the Gamma GLM: swapping q-NEI for a central
 composite costs a median 5.7 to 8.7 regret with either model, while swapping the
 model moves it by at most 2.6, and by under 0.1 in half the cells.
 
-Both baselines are iterative. A one-shot Box-Behnken or CCD, which is what a lab
-would more often run, is not in the benchmark yet, so nothing here yet supports
-"fewer experiments than a fixed design".
-
 What the campaign is doing between those numbers, round by round. Two factors
 here so the surface can be drawn; each row is one round, showing the truth, what
 the model believes, and where it is still unsure.
@@ -180,12 +176,9 @@ uv run python -m benchmarks.two_factor.rounds --arm qnei --surface quadratic
 On the quadratic surface the model is in family, and the seed alone is not
 enough: after 11 runs the posterior mean is a broad gradient and uncertainty is
 high nearly everywhere. By round 2 the ridge is in the right place and
-uncertainty has collapsed into an island around the optimum. The far corner
-stays dark to the end, because nothing out there would change the answer.
+uncertainty has collapsed into an island around the optimum. 
 
-The GP-sampled surface is the harder case. No quadratic fits it, so the
-posterior mean stays a smooth approximation of a surface that is not smooth, and
-the campaign is still descending at round 4 rather than converged:
+The GP-sampled surface is the harder case. The campaign is still descending at round 4 rather than converged:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="benchmarks/two_factor/results/rounds_qnei_gp_dark.svg">
