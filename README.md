@@ -4,27 +4,16 @@
 
 [![tests](https://github.com/tremgan/malt/actions/workflows/ci.yml/badge.svg)](https://github.com/tremgan/malt/actions/workflows/ci.yml)
 
-malt picks which media compositions to test next. It fits a Bayesian Gamma GLM
-model to growth data (not Gaussian since growth is bounded from below by 0) and proposes the next batch by Bayesian optimization.
+malt picks which media compositions to test next for newly established cell lines. It fits a Bayesian Gamma GLM
+model to growth data and proposes the next batch by Bayesian optimization.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/quadratic_oracle_dark.svg">
-  <img alt="A synthetic growth surface: mean biomass against glucose and nitrogen, with a diagonal ridge where the two interact" src="docs/figures/quadratic_oracle.svg">
+  <img alt="An example of a 2 factor growth surface with a Gamma likelihood" src="docs/figures/quadratic_oracle.svg">
 </picture>
 
-The problem in two components. Real media have six or eight, the surface is not
-this smooth, and every point costs a culture.
 
-Candidates are space-filling draws rather than a grid, redrawn each round, and
-q-NEI treats them only as starting points. It then optimizes each pick with
-L-BFGS-B on the model's analytic derivative. The gain grows with the number of
-components, since a pool of n points covers only n^(1/k) levels per component.
-The rule is BoTorch's q-NEI under sequential greedy selection, in numpy over
-PyMC's posterior draws, so nothing here depends on torch. UCB and Thompson
-sampling still pick from the draws.
-
-**Status:** early and changing fast. Simulated campaigns run end to end; the
-state store and the agent-facing tools come next.
+**Status:** early
 
 ## Layout
 
@@ -44,18 +33,6 @@ uv sync
 uv run pytest
 ```
 
-### On macOS
-
-The first fit dies with `ld: library 'd64' not found`, from a PyTensor bug on
-macOS 15 and later. Turn its C backend off, which costs nothing here because
-sampling goes through nutpie:
-
-```bash
-printf '[global]\ncxx=\n' > ~/.pytensorrc
-```
-
-If you already have a `~/.pytensorrc`, add `cxx=` under its `[global]` instead
-of running that, which would overwrite it.
 
 ## Using it in a lab
 
@@ -142,20 +119,13 @@ Six more runs was enough to see the response turn over, so the second batch
 comes off the ceiling and gathers around 15 g/L glucose and 2 to 4 g/L nitrogen.
 One point still goes to the glucose bound, because nothing yet rules out more.
 
-`observe` accumulates, so hand it the new rows rather than the whole file again:
-re-observing 11 runs it has already seen leaves it twice as sure as it should
-be. If you would rather not track which rows are new, throw the `Experimenter`
-away and rebuild it from the whole file. Conditioning is associative, so both
-routes give the same posterior to the last digit, and there is no state to
-recover after a crash beyond the file itself.
+
 
 ### What it needs from you
 
-- **One row per run**, a column per factor plus the readout. Columns it does not
-  recognise are ignored, so an existing sheet with operator, date or notes works
-  as it is.
+- **One row per run**, a column per factor plus the readout. 
 - **A strictly positive readout.** The likelihood is Gamma, so zero or negative
-  values are refused rather than quietly fitted. Call it `y`, or say which
+  values are refused, reflective of the values malt tries to estimate (biomass, growth rate). Call it `y`, or say which
   column it is with `GammaGLMSurrogate(FACTORS, response="OD600")`.
 - **More runs than the model has terms.** A full quadratic over `k` factors has
   `2k + k(k-1)/2` of them, so two factors need at least 6 runs and three need 10.
