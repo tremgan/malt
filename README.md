@@ -198,7 +198,6 @@ uv run python -m benchmarks.two_factor.ablation --replicates 20 --workers 8
 
 ## Planned
 
-None of this exists yet.
 
 **A state store, and an MCP server over it.** The agent-facing tools are meant to
 be the primary interface, with a human checkpoint wired into the data rather than
