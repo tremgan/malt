@@ -200,29 +200,14 @@ uv run python -m benchmarks.two_factor.ablation --replicates 20 --workers 8
 
 
 **A state store, and an MCP server over it.** The agent-facing tools are meant to
-be the primary interface, with a human checkpoint wired into the data rather than
-into somebody's discipline: a batch is written `proposed`, and only a person moves
-it to `approved`. Nothing in the repo will make that transition on its own. Every
-tool call has to be resumable, so an agent picking up a campaign after a restart
-can reconstruct where things stand from the store alone. Today that state is
-whatever CSV you keep.
+be the primary interface in the future.
 
-**Batch effects.** Runs done in one session share an operator, a media lot and a
-cell state, and pretending otherwise attributes session-to-session variation to
-the media composition. The plan is a random intercept per batch, which is also
-why a batch carries an ID from proposal through results rather than being
-flattened into one long frame. The part that matters is what the acquisition
-then sees: for a batch that has not been run yet, its offset is itself unknown,
-so the uncertainty has to integrate over that variance instead of using the
-fixed effects alone. Getting that wrong understates uncertainty everywhere and
-produces no error.
+**Batch effects.** Directly model them with PyMC
 
 **Execution through [PyLabRobot](https://github.com/pylabrobot/pylabrobot).** A
 hardware-agnostic layer for liquid handlers, so an approved batch could become a
 protocol a deck actually runs, and the results could come back without being
 retyped. Note where the boundary sits: malt would emit a batch and PyLabRobot
-would execute one that a human has already approved. The approval does not become
-a function call, and nothing in `engine` or `active_learning` will reach for a
-robot.
+would execute one that a human has already approved.
 
 
