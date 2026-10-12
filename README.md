@@ -200,7 +200,7 @@ uv run python -m benchmarks.two_factor.ablation --replicates 20 --workers 8
 
 
 **A state store, and an MCP server over it.** The agent-facing tools are meant to
-be the primary interface in the future.
+be the primary interface in the future. Goal is that a non-technical operator could conceivably run a campaign with minimal input.
 
 **Batch effects.** Directly model them with PyMC
 
